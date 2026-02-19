@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: autoHealing
+  config:
+    import: optional:file:.env[.properties] # name -> application.name으로 경로 수정 추천
+  datasource:
+    # .env 파일에 작성할 변수명과 일치시킵니다
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true # SQL을 예쁘게 출력해줍니다
+        dialect: org.hibernate.dialect.PostgreSQLDialect

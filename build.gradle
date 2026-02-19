@@ -1,0 +1,63 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.0.2'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+description = 'Demo project for Spring Boot'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+configurations {
+	compileOnly {
+		extendsFrom annotationProcessor
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-webflux'
+	compileOnly 'org.projectlombok:lombok'
+	annotationProcessor 'org.projectlombok:lombok'
+	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-webflux-test'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구
+	implementation 'com.azure.resourcemanager:azure-resourcemanager:2.34.0'
+	implementation 'com.azure:azure-identity:1.11.0'
+
+	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
+	runtimeOnly 'org.postgresql:postgresql'
+
+
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+    
+    // .env 파일 로드 설정
+    doFirst {
+        def envFile = file('.env')
+        if (envFile.exists()) {
+            envFile.eachLine { line ->
+                if (line.trim() && !line.startsWith('#')) {
+                    def (key, value) = line.tokenize('=')
+                    if (key && value) {
+                        systemProperty key.trim(), value.trim()
+                    }
+                }
+            }
+        }
+    }
+}
