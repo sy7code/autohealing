@@ -1,6 +1,7 @@
 package com.example.autohealing.orchestrator;
 
 import com.example.autohealing.ai.AiRemediationService;
+import com.example.autohealing.ai.AiRemediationResult;
 import com.example.autohealing.client.SnykCliScannerService;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import com.example.autohealing.service.JiraService;
@@ -31,6 +32,8 @@ import java.util.List;
  * └──────────────────────────────────────────────────────────┘
  * </pre>
  */
+import com.example.autohealing.service.GithubService;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -39,6 +42,7 @@ public class SecurityOrchestrator {
   private final JiraService jiraService;
   private final SnykCliScannerService snykCliScannerService;
   private final AiRemediationService aiRemediationService;
+  private final GithubService githubService;
 
   @Value("${LOCAL_REPO_PATH:}")
   private String localRepoPath;
@@ -133,18 +137,30 @@ public class SecurityOrchestrator {
             || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
         .toList();
 
+    java.util.Set<String> processedIds = new java.util.HashSet<>();
+
     log.info("[Orchestrator][AI] CRITICAL/HIGH {}건 AI 수정 시도", targets.size());
 
     for (UnifiedIssue issue : targets) {
+      if (!processedIds.add(issue.getId())) {
+        log.info("[Orchestrator][AI] 이미 처리 중인 취약점 ID 건너뜀: {}", issue.getId());
+        continue;
+      }
       try {
         String originalCode = readSourceFile(issue);
         String vulnInfo = buildVulnerabilityInfo(issue);
-        String fixedCode = aiRemediationService.fixCode(originalCode, vulnInfo);
+        AiRemediationResult result = aiRemediationService.fixCode(originalCode, vulnInfo);
+        String fixedCode = result.getFixedCode();
+        String explanation = result.getExplanation();
 
         log.info("[Orchestrator][AI] 수정 완료 - id={} ({}자→{}자)",
             issue.getId(), originalCode.length(), fixedCode.length());
 
-        // TODO: GithubService.createPR(fixedCode) 연동 예정
+        githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+
+        // 메모리에 설명 남겨두었다가 개별 Jira 티켓 생성 시 합치기 위해 임시 저장 (issue.getId() 매핑)
+        issue.setDescription(issue.getDescription() + "\n\n=== AI 자동 수정 내용 요약 ===\n" + explanation);
+
         fixedCount++;
       } catch (Exception e) {
         log.warn("[Orchestrator][AI] 수정 실패 - id={}", issue.getId(), e);
@@ -158,13 +174,17 @@ public class SecurityOrchestrator {
       return "// LOCAL_REPO_PATH 미설정\n" + issue.getDescription();
     }
     String filePath = extractFilePath(issue.getDescription());
-    if (filePath == null)
+    if (filePath == null) {
       return "// 파일 경로 정보 없음\n" + issue.getDescription();
+    }
     try {
       return Files.readString(Path.of(localRepoPath, filePath));
+    } catch (java.nio.file.InvalidPathException e) {
+      log.warn("[Orchestrator][AI] 잘못된 파일 경로 형식: {}", filePath);
+      return "// 잘못된 파일 경로 형식: " + filePath + "\n" + issue.getDescription();
     } catch (IOException e) {
       log.warn("[Orchestrator][AI] 파일 읽기 실패: {}", filePath);
-      return "// 파일 읽기 실패: " + filePath;
+      return "// 파일 읽기 실패: " + filePath + "\n" + issue.getDescription();
     }
   }
 

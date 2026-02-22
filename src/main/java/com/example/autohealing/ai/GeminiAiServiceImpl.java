@@ -57,7 +57,7 @@ public class GeminiAiServiceImpl implements AiRemediationService {
    * @return 수정된 소스 코드 (API 실패 시 원본 반환)
    */
   @Override
-  public String fixCode(String originalCode, String vulnerabilityInfo) {
+  public AiRemediationResult fixCode(String originalCode, String vulnerabilityInfo) {
     if (apiKey == null || apiKey.isBlank()) {
       log.warn("[GeminiAI] GEMINI_API_KEY가 설정되지 않았습니다. Mock 수정 코드를 반환합니다.");
       return mockFixedCode(originalCode, vulnerabilityInfo);
@@ -67,14 +67,32 @@ public class GeminiAiServiceImpl implements AiRemediationService {
     try {
       String prompt = buildPrompt(originalCode, vulnerabilityInfo);
       String rawResponse = callGeminiApi(prompt);
-      String fixedCode = extractCodeFromResponse(rawResponse);
 
-      log.info("[GeminiAI] 코드 수정 완료 (응답 길이={}자)", fixedCode.length());
-      return fixedCode;
+      // JSON 파싱 (간단히 정규식 또는 문자열 추출 방식, 여기선 응답 포맷에 의존하므로 문자열 파싱이나 json 변환)
+      // 프롬프트 상 ```json ... ``` 으로 감싸져 나올 수 있으므로 추출
+      String jsonStr = extractCodeFromResponse(rawResponse, "json");
+      String fixedCode = "";
+      String explanation = "";
+
+      try {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(jsonStr.isBlank() ? rawResponse : jsonStr);
+        fixedCode = root.path("fixedCode").asText();
+        explanation = root.path("explanation").asText();
+      } catch (Exception jsonEx) {
+        log.warn("[GeminiAI] JSON 파싱 실패, Fallback 적용", jsonEx);
+        fixedCode = extractCodeFromResponse(rawResponse, "java");
+        explanation = "수정 내역을 파싱하는데 실패했습니다. (원본 응답: " + rawResponse + ")";
+        if (fixedCode.isBlank())
+          fixedCode = rawResponse;
+      }
+
+      log.info("[GeminiAI] 코드 수정 완료 (코드길이={}자)", fixedCode.length());
+      return new AiRemediationResult(fixedCode, explanation);
 
     } catch (Exception e) {
       log.error("[GeminiAI] API 호출 실패 - 원본 코드를 반환합니다.", e);
-      return originalCode;
+      return new AiRemediationResult(originalCode, "API 호출 중 오류가 발생했습니다: " + e.getMessage());
     }
   }
 
@@ -131,31 +149,40 @@ public class GeminiAiServiceImpl implements AiRemediationService {
         %s
 
         ## Original Source Code
-        ```
+        ```java
         %s
         ```
 
         ## Instructions
-        1. Analyze the vulnerability described above
-        2. Fix ONLY the vulnerable part while keeping the rest of the code unchanged
-        3. Return the COMPLETE fixed source code (not just the changed lines)
-        4. Wrap the fixed code in a single ```java code block
-        5. Do NOT include any explanation outside the code block
+        1. Analyze the vulnerability described above.
+        2. Fix ONLY the vulnerable part while keeping the rest of the code unchanged.
+        3. Explain why this vulnerability occurs and exactly how you fixed it. WRITE THE EXPLANATION IN KOREAN (한국어).
+        4. You MUST return the response strictly in the following JSON format.
+        5. Do NOT wrap the JSON in markdown code blocks like ```json ... ```. Just return raw JSON.
+
+        {
+          "fixedCode": "(The COMPLETE fixed source code as a string, with escaped quotes and newlines)",
+          "explanation": "(Your detailed explanation in KOREAN)"
+        }
         """, vulnerabilityInfo, originalCode);
   }
 
   /**
-   * AI 응답 텍스트에서 코드 블록(```...```)을 추출합니다.
-   * 코드 블록이 없으면 전체 응답을 반환합니다.
+   * 언어 태그(language tag)에 맞춰 코드 블록(```tag ... ```)을 추출합니다.
+   * 언어 태그를 찾지 못하면 ``` ... ``` 를 찾고, 그래도 없으면 전체를 반환합니다.
    */
-  private String extractCodeFromResponse(String response) {
+  private String extractCodeFromResponse(String response, String langTag) {
     if (response == null || response.isBlank())
       return "";
 
-    // ```java ... ``` 또는 ``` ... ``` 패턴 추출
-    int startIdx = response.indexOf("```");
-    if (startIdx == -1)
-      return response.trim();
+    String startBlock = "```" + langTag;
+    int startIdx = response.indexOf(startBlock);
+    if (startIdx == -1) {
+      startIdx = response.indexOf("```");
+      if (startIdx == -1)
+        return response.trim();
+      startBlock = "```";
+    }
 
     int codeStart = response.indexOf('\n', startIdx) + 1;
     int endIdx = response.lastIndexOf("```");
@@ -167,10 +194,10 @@ public class GeminiAiServiceImpl implements AiRemediationService {
 
   /**
    * API key 없을 때 반환하는 Mock 수정 코드.
-   * 원본 코드 첫 줄 위에 TODO 보안 주석을 추가합니다.
    */
-  private String mockFixedCode(String originalCode, String vulnerabilityInfo) {
-    return String.format("""
+  private AiRemediationResult mockFixedCode(String originalCode, String vulnerabilityInfo) {
+    String explanation = "GEMINI_API_KEY가 설정되지 않아 실제 AI 기반 자동 수정을 수행하지 못했습니다.";
+    String mockCode = String.format("""
         // [AUTO-HEALING MOCK] GEMINI_API_KEY 미설정 - 수동 수정 필요
         // 보안 취약점: %s
         // TODO: 아래 코드의 취약점을 수동으로 수정해 주세요.
@@ -179,5 +206,7 @@ public class GeminiAiServiceImpl implements AiRemediationService {
         """,
         vulnerabilityInfo.lines().findFirst().orElse("알 수 없는 취약점"),
         originalCode);
+
+    return new AiRemediationResult(mockCode, explanation);
   }
 }

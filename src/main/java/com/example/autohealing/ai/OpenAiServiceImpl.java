@@ -31,7 +31,7 @@ public class OpenAiServiceImpl implements AiRemediationService {
   }
 
   @Override
-  public String fixCode(String originalCode, String vulnerabilityInfo) {
+  public AiRemediationResult fixCode(String originalCode, String vulnerabilityInfo) {
     if (apiKey == null || apiKey.isBlank()) {
       log.warn("[OpenAI] OPENAI_API_KEY가 설정되지 않았습니다. Mock 수정 코드를 반환합니다.");
     } else {
@@ -39,7 +39,7 @@ public class OpenAiServiceImpl implements AiRemediationService {
     }
 
     // TODO: openai-java 라이브러리 추가 후 gpt-4o API 호출 구현
-    return String.format("""
+    String mockCode = String.format("""
         // [AUTO-HEALING OPENAI STUB] 실제 OpenAI 호출 로직 미구현
         // 취약점: %s
         // TODO: 아래 코드를 수동으로 수정해 주세요.
@@ -48,5 +48,7 @@ public class OpenAiServiceImpl implements AiRemediationService {
         """,
         vulnerabilityInfo.lines().findFirst().orElse("알 수 없는 취약점"),
         originalCode);
+
+    return new AiRemediationResult(mockCode, "OpenAI API 연동을 위한 Stub 클래스 안내입니다.");
   }
 }

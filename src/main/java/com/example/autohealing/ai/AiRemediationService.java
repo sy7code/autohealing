@@ -26,9 +26,9 @@ public interface AiRemediationService {
    *
    * @param originalCode      취약점이 발견된 원본 소스 코드 (전체 파일 내용)
    * @param vulnerabilityInfo 취약점 설명 (ID, 제목, 심각도 등 요약 문자열)
-   * @return 수정된 전체 소스 코드. AI 호출 실패 시 originalCode 그대로 반환.
+   * @return 수정된 결과 (수정된 전체 코드와 한글 설명 포함). AI 호출 실패 시 코드를 원본으로 반환.
    */
-  String fixCode(String originalCode, String vulnerabilityInfo);
+  AiRemediationResult fixCode(String originalCode, String vulnerabilityInfo);
 
   /**
    * 이 구현체가 사용하는 AI 제공자 이름.
