@@ -3,7 +3,6 @@ package com.example.autohealing.client;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
@@ -13,26 +12,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Snyk REST API v1 클라이언트.
+ * Snyk REST API v3 클라이언트.
  *
  * <h3>인증</h3>
  * {@code Authorization: token <SNYK_API_TOKEN>} 헤더를 사용합니다.
  *
  * <h3>주요 흐름</h3>
  * <ol>
- * <li>조직 목록 조회 ({@code /orgs})</li>
- * <li>첫 번째 조직의 프로젝트 목록 조회</li>
- * <li>각 프로젝트의 취약점 이슈 조회</li>
+ * <li>조직의 전체 이슈 목록 조회 ({@code /rest/orgs/{orgId}/issues})</li>
+ * <li>각 이슈를 UnifiedIssue 형식으로 변환</li>
  * </ol>
  *
  * <p>
- * SNYK_API_TOKEN 은 {@code .env} 파일에 설정하세요.
+ * SNYK_API_TOKEN, SNYK_ORG_ID 은 {@code .env} 파일에 설정하세요.
  */
 @Slf4j
 @Component
 public class SnykClient {
 
-  private static final String SNYK_API_BASE = "https://snyk.io/api/v1";
+  private static final String SNYK_REST_BASE = "https://api.snyk.io/rest";
+  private static final String SNYK_API_VERSION = "2024-10-15";
 
   private final WebClient webClient;
   private final String snykApiToken;
@@ -51,49 +50,56 @@ public class SnykClient {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * 첫 번째 Snyk 조직의 모든 프로젝트에서 취약점 이슈를 수집합니다.
+   * Snyk 조직의 모든 취약점 이슈를 수집합니다.
    *
    * @return 취약점 이슈 Map 목록 (각 Map은 개별 취약점 데이터)
    */
+  @SuppressWarnings("unchecked")
   public List<Map<String, Object>> fetchVulnerabilities() {
     if (snykApiToken == null || snykApiToken.isBlank()) {
       log.warn("[SnykClient] SNYK_API_TOKEN이 설정되지 않았습니다. Mock 데이터를 반환합니다.");
       return mockVulnerabilities();
     }
+    if (snykOrgId == null || snykOrgId.isBlank()) {
+      log.error("[SnykClient] SNYK_ORG_ID가 설정되지 않았습니다. .env에 추가하세요.");
+      return Collections.emptyList();
+    }
 
     try {
-      // 1단계: Org ID 결정 (환경변수 우선, 없으면 API로 조회)
-      String orgId;
-      if (snykOrgId != null && !snykOrgId.isBlank()) {
-        orgId = snykOrgId;
-        log.info("[SnykClient] SNYK_ORG_ID 환경변수 사용: {}", orgId);
-      } else {
-        orgId = fetchFirstOrgId();
-        if (orgId == null) {
-          log.error("[SnykClient] 조직 정보를 가져올 수 없습니다. SNYK_ORG_ID를 .env에 설정하면 이 호출을 생략할 수 있습니다.");
-          return Collections.emptyList();
-        }
-        log.info("[SnykClient] /orgs API로 조회한 조직 ID: {}", orgId);
-      }
+      // Step1: REST API v3로 조직 전체 이슈 조회
+      log.info("[SnykClient] REST API v3 이슈 조회 - orgId={}", snykOrgId);
 
-      // 2단계: 프로젝트 목록 조회
-      List<Map<String, Object>> projects = fetchProjects(orgId);
-      if (projects.isEmpty()) {
-        log.warn("[SnykClient] 조직에 프로젝트가 없습니다. orgId={}", orgId);
+      Map<String, Object> response = webClient.get()
+          .uri(SNYK_REST_BASE + "/orgs/{orgId}/issues?version={ver}&limit=100",
+              snykOrgId, SNYK_API_VERSION)
+          .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
+          .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
+          .retrieve()
+          .bodyToMono(Map.class)
+          .block();
+
+      if (response == null) {
+        log.warn("[SnykClient] 응답이 null입니다.");
         return Collections.emptyList();
       }
-      log.info("[SnykClient] 발견된 프로젝트 수: {}", projects.size());
 
-      // 3단계: 각 프로젝트의 취약점 수집
-      return projects.stream()
-          .flatMap(project -> {
-            String projectId = (String) project.get("id");
-            String projectName = (String) project.get("name");
-            log.info("[SnykClient] 프로젝트 스캔 중: {} ({})", projectName, projectId);
-            return fetchIssues(orgId, projectId).stream();
-          })
+      List<Map<String, Object>> data = (List<Map<String, Object>>) response.get("data");
+      if (data == null || data.isEmpty()) {
+        log.info("[SnykClient] 이슈 없음 (data=[])");
+        return Collections.emptyList();
+      }
+
+      log.info("[SnykClient] 이슈 {}건 수신", data.size());
+
+      // REST v3 응답 → 기존 Map 형식으로 변환 (SnykParser 호환)
+      return data.stream()
+          .map(this::convertToLegacyFormat)
           .toList();
 
+    } catch (WebClientResponseException ex) {
+      log.error("[SnykClient] 이슈 조회 실패 - status={}, body={}",
+          ex.getStatusCode(), ex.getResponseBodyAsString());
+      return Collections.emptyList();
     } catch (Exception e) {
       log.error("[SnykClient] 취약점 조회 중 오류 발생", e);
       return Collections.emptyList();
@@ -101,83 +107,52 @@ public class SnykClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Private – Snyk API Calls
+  // Private – 응답 변환 (REST v3 → 기존 SnykParser 호환 포맷)
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Snyk REST v3 {@code data[]} 항목 하나를 기존 v1 parser가 읽을 수 있는 Map으로 변환합니다.
+   */
   @SuppressWarnings("unchecked")
-  private String fetchFirstOrgId() {
-    try {
-      Map<String, Object> response = webClient.get()
-          .uri(SNYK_API_BASE + "/orgs")
-          .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-          .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-          .retrieve()
-          .bodyToMono(Map.class)
-          .block();
+  private Map<String, Object> convertToLegacyFormat(Map<String, Object> item) {
+    String id = (String) item.getOrDefault("id", "unknown");
 
-      if (response == null)
-        return null;
-      List<Map<String, Object>> orgs = (List<Map<String, Object>>) response.get("orgs");
-      if (orgs == null || orgs.isEmpty())
-        return null;
-      return (String) orgs.get(0).get("id");
+    Map<String, Object> attributes = (Map<String, Object>) item.getOrDefault("attributes", Collections.emptyMap());
 
-    } catch (WebClientResponseException ex) {
-      log.error("[SnykClient] 조직 조회 실패 - status={}, body={}",
-          ex.getStatusCode(), ex.getResponseBodyAsString());
-      return null;
+    String title = (String) attributes.getOrDefault("title", "Unknown Issue");
+    String description = (String) attributes.getOrDefault("description", "");
+    String severity = "";
+
+    // severity는 effectiveSeverityLevel 또는 severity 필드
+    Map<String, Object> effectiveSeverity = (Map<String, Object>) attributes.get("effective_severity_level");
+    if (effectiveSeverity != null) {
+      severity = (String) effectiveSeverity.getOrDefault("severity", "");
     }
-  }
-
-  @SuppressWarnings("unchecked")
-  private List<Map<String, Object>> fetchProjects(String orgId) {
-    try {
-      Map<String, Object> response = webClient.get()
-          .uri(SNYK_API_BASE + "/org/{orgId}/projects", orgId)
-          .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-          .header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-          .retrieve()
-          .bodyToMono(Map.class)
-          .block();
-
-      if (response == null)
-        return Collections.emptyList();
-      List<Map<String, Object>> projects = (List<Map<String, Object>>) response.get("projects");
-      return projects != null ? projects : Collections.emptyList();
-
-    } catch (WebClientResponseException ex) {
-      log.error("[SnykClient] 프로젝트 조회 실패 - orgId={}, status={}", orgId, ex.getStatusCode());
-      return Collections.emptyList();
+    if (severity.isBlank()) {
+      severity = (String) attributes.getOrDefault("severity", "medium");
     }
-  }
 
-  @SuppressWarnings("unchecked")
-  private List<Map<String, Object>> fetchIssues(String orgId, String projectId) {
-    try {
-      Map<String, Object> response = webClient.post()
-          .uri(SNYK_API_BASE + "/org/{orgId}/project/{projectId}/issues", orgId, projectId)
-          .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-          .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-          .bodyValue(Map.of("filters", Map.of(
-              "severities", List.of("critical", "high", "medium"),
-              "types", List.of("vuln"))))
-          .retrieve()
-          .bodyToMono(Map.class)
-          .block();
-
-      if (response == null)
-        return Collections.emptyList();
-      Map<String, Object> issues = (Map<String, Object>) response.get("issues");
-      if (issues == null)
-        return Collections.emptyList();
-
-      List<Map<String, Object>> vulns = (List<Map<String, Object>>) issues.get("vulnerabilities");
-      return vulns != null ? vulns : Collections.emptyList();
-
-    } catch (WebClientResponseException ex) {
-      log.error("[SnykClient] 이슈 조회 실패 - projectId={}, status={}", projectId, ex.getStatusCode());
-      return Collections.emptyList();
+    // 패키지 정보
+    String packageName = "";
+    List<Map<String, Object>> coordinates = (List<Map<String, Object>>) attributes.get("coordinates");
+    if (coordinates != null && !coordinates.isEmpty()) {
+      Map<String, Object> firstCoord = coordinates.get(0);
+      List<Map<String, Object>> representations = (List<Map<String, Object>>) firstCoord.get("representations");
+      if (representations != null && !representations.isEmpty()) {
+        Map<String, Object> dep = (Map<String, Object>) representations.get(0).get("dependency");
+        if (dep != null) {
+          packageName = (String) dep.getOrDefault("package_name", "");
+        }
+      }
     }
+
+    return Map.of(
+        "id", id,
+        "title", title,
+        "description", description,
+        "severity", severity,
+        "packageName", packageName,
+        "version", "");
   }
 
   // ─────────────────────────────────────────────────────────────────────────
