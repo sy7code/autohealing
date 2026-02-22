@@ -19,15 +19,6 @@ import java.util.Optional;
 
 /**
  * Jira Cloud REST API v3를 통해 이슈를 생성/수정하는 서비스.
- *
- * <h3>인증</h3>
- * Basic Auth: Base64(email:apiToken) 을 Authorization 헤더에 설정합니다.
- *
- * <h3>주요 메서드</h3>
- * <ul>
- * <li>{@link #createIssue} : POST /rest/api/3/issue 로 새 티켓 생성</li>
- * <li>{@link #updateIssue} : PUT /rest/api/3/issue/{key} 로 기존 티켓 수정</li>
- * </ul>
  */
 @Slf4j
 @Service
@@ -37,16 +28,8 @@ public class JiraService {
   private final JiraConfig jiraConfig;
   private final WebClient webClient;
 
-  /**
-   * 선택적(Optional) 주입: auto 모드에서만 필요합니다.
-   * 구현체가 없으면 빈 Optional이 주입됩니다.
-   */
   private final Optional<HealingStrategy> healingStrategy;
 
-  /**
-   * auto-healing.mode 설정 값 ("auto" | "manual").
-   * 기본값은 "manual" 입니다.
-   */
   @Value("${auto-healing.mode:manual}")
   private String healingMode;
 
@@ -54,17 +37,14 @@ public class JiraService {
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Jira 이슈를 생성합니다.
-   *
-   * @param summary     이슈 제목 (1줄 요약)
-   * @param description 이슈 상세 설명 (ADF 본문에 삽입)
-   * @return 생성된 이슈의 key (예: "SCRUM-42"), 실패 시 null
-   */
   public String createIssue(String summary, String description) {
+    return createIssue(summary, description, null, null);
+  }
+
+  public String createIssue(String summary, String description, String severity, List<String> labels) {
     log.info("[Jira] 이슈 생성 시작 - mode={}, summary={}", healingMode, summary);
 
-    Map<String, Object> payload = buildPayload(summary, description);
+    Map<String, Object> payload = buildPayload(summary, description, severity, labels);
     String createdKey = callJiraApi(payload);
 
     if (createdKey == null) {
@@ -77,17 +57,6 @@ public class JiraService {
     return createdKey;
   }
 
-  /**
-   * 기존 Jira 이슈의 Summary와 Description을 수정합니다.
-   *
-   * <p>
-   * SecurityOrchestrator의 2단계에서 "분석 중" 티켓을 실제 결과로 교체할 때 사용합니다.
-   *
-   * @param issueKey    수정할 이슈 키 (예: "SCRUM-42")
-   * @param summary     새 Summary 텍스트
-   * @param description 새 Description 텍스트 (ADF 포맷으로 변환됨)
-   * @return 수정 성공 시 {@code true}, 실패 시 {@code false}
-   */
   public boolean updateIssue(String issueKey, String summary, String description) {
     log.info("[Jira] 이슈 수정 시작 - key={}, summary={}", issueKey, summary);
 
@@ -103,7 +72,7 @@ public class JiraService {
           .bodyValue(payload)
           .retrieve()
           .toBodilessEntity()
-          .subscribeOn(Schedulers.boundedElastic()) // nio 스레드 외부에서 block() 실행
+          .subscribeOn(Schedulers.boundedElastic())
           .block();
 
       log.info("[Jira] 이슈 수정 성공 - key={}", issueKey);
@@ -121,10 +90,6 @@ public class JiraService {
 
   /**
    * 이슈에 댓글을 추가합니다.
-   *
-   * @param issueKey 등록할 이슈 키 (예: "SCRUM-42")
-   * @param comment  등록할 댓글 본문 (ADF 포맷으로 변환됨)
-   * @return 성공 여부
    */
   public boolean addCommentToIssue(String issueKey, String comment) {
     log.info("[Jira] 이슈 댓글 추가 시도 - key={}", issueKey);
@@ -132,7 +97,6 @@ public class JiraService {
     String endpoint = jiraConfig.getHost() + "/rest/api/3/issue/" + issueKey + "/comment";
     String authHeader = buildBasicAuthHeader();
 
-    // ADF 포맷 (type: doc) 구성
     Map<String, Object> textNode = Map.of("type", "text", "text", comment);
     Map<String, Object> paragraph = Map.of("type", "paragraph", "content", List.of(textNode));
     Map<String, Object> adfDocument = Map.of("type", "doc", "version", 1, "content", List.of(paragraph));
@@ -163,38 +127,116 @@ public class JiraService {
     }
   }
 
+  /**
+   * 이슈의 상태를 변경(Transition)합니다. (예: "In Progress", "Done")
+   */
+  @SuppressWarnings("unchecked")
+  public boolean transitionIssue(String issueKey, String transitionName) {
+    log.info("[Jira] 이슈 상태 전환 시도 - key={}, target={}", issueKey, transitionName);
+    String endpoint = jiraConfig.getHost() + "/rest/api/3/issue/" + issueKey + "/transitions";
+    String authHeader = buildBasicAuthHeader();
+
+    try {
+      Map<String, Object> transitionsResponse = webClient.get()
+          .uri(endpoint)
+          .header(HttpHeaders.AUTHORIZATION, authHeader)
+          .retrieve()
+          .bodyToMono(Map.class)
+          .block();
+
+      if (transitionsResponse == null || !transitionsResponse.containsKey("transitions")) {
+        log.warn("[Jira] Transition 목록을 가져올 수 없습니다: {}", issueKey);
+        return false;
+      }
+
+      List<Map<String, Object>> transitions = (List<Map<String, Object>>) transitionsResponse.get("transitions");
+      String transitionId = null;
+      java.util.List<String> availableNames = new java.util.ArrayList<>();
+
+      for (Map<String, Object> tr : transitions) {
+        String name = (String) tr.get("name");
+        if (name != null) {
+          availableNames.add(name);
+          String lowerName = name.toLowerCase();
+          String lowerTarget = transitionName.toLowerCase();
+
+          if (lowerName.equals(lowerTarget) ||
+              (lowerTarget.equals("in progress") && (lowerName.contains("progress") || lowerName.contains("진행"))) ||
+              (lowerTarget.equals("done") && (lowerName.contains("done") || lowerName.contains("완료")))) {
+            transitionId = (String) tr.get("id");
+            break;
+          }
+        }
+      }
+
+      if (transitionId == null) {
+        log.warn("[Jira] 유효한 Transition 이름을 찾을 수 없습니다: {} (target={}), available: {}", issueKey, transitionName,
+            availableNames);
+        return false;
+      }
+
+      Map<String, Object> payload = Map.of(
+          "transition", Map.of("id", transitionId));
+
+      webClient.post()
+          .uri(endpoint)
+          .header(HttpHeaders.AUTHORIZATION, authHeader)
+          .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+          .bodyValue(payload)
+          .retrieve()
+          .toBodilessEntity()
+          .block();
+
+      log.info("[Jira] 이슈 상태 전환 성공 - key={}, to={}", issueKey, transitionName);
+      return true;
+
+    } catch (WebClientResponseException ex) {
+      log.error("[Jira] 상태 전환 실패 - key={}, status={}, body={}", issueKey, ex.getStatusCode(),
+          ex.getResponseBodyAsString());
+      return false;
+    } catch (Exception ex) {
+      log.error("[Jira] 상태 전환 중 오류", ex);
+      return false;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Private Helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Jira API 요청 바디(payload)를 조립합니다.
-   * Description은 Atlassian Document Format (ADF)을 사용합니다.
-   */
-  private Map<String, Object> buildPayload(String summary, String description) {
-    // ADF: doc > paragraph > text
-    Map<String, Object> textNode = Map.of(
-        "type", "text",
-        "text", description);
-    Map<String, Object> paragraph = Map.of(
-        "type", "paragraph",
-        "content", List.of(textNode));
-    Map<String, Object> adfDocument = Map.of(
-        "type", "doc",
-        "version", 1,
-        "content", List.of(paragraph));
+  private Map<String, Object> buildPayload(String summary, String description, String severity, List<String> labels) {
+    Map<String, Object> textNode = Map.of("type", "text", "text", description);
+    Map<String, Object> paragraph = Map.of("type", "paragraph", "content", List.of(textNode));
+    Map<String, Object> adfDocument = Map.of("type", "doc", "version", 1, "content", List.of(paragraph));
 
-    return Map.of(
-        "fields", Map.of(
-            "project", Map.of("key", jiraConfig.getProjectKey()),
-            "summary", summary,
-            "description", adfDocument,
-            "issuetype", Map.of("name", "Task")));
+    String priorityName = mapSeverityToPriority(severity);
+
+    java.util.Map<String, Object> fields = new java.util.HashMap<>(Map.of(
+        "project", Map.of("key", jiraConfig.getProjectKey()),
+        "summary", summary,
+        "description", adfDocument,
+        "issuetype", Map.of("name", "Task"),
+        "priority", Map.of("name", priorityName)));
+
+    if (labels != null && !labels.isEmpty()) {
+      fields.put("labels", labels);
+    }
+
+    return Map.of("fields", fields);
   }
 
-  /**
-   * 이슈 수정(PUT)용 payload. issuetype 없이 summary + description만 포함합니다.
-   */
+  private String mapSeverityToPriority(String severity) {
+    if (severity == null)
+      return "Medium";
+    return switch (severity.toUpperCase()) {
+      case "CRITICAL" -> "Highest";
+      case "HIGH" -> "High";
+      case "MEDIUM" -> "Medium";
+      case "LOW" -> "Low";
+      default -> "Medium";
+    };
+  }
+
   private Map<String, Object> buildUpdatePayload(String summary, String description) {
     Map<String, Object> textNode = Map.of("type", "text", "text", description);
     Map<String, Object> paragraph = Map.of("type", "paragraph", "content", List.of(textNode));
@@ -205,11 +247,6 @@ public class JiraService {
         "description", adfDocument));
   }
 
-  /**
-   * Jira REST API를 실제로 호출합니다.
-   *
-   * @return 생성된 이슈 key, 오류 발생 시 null
-   */
   @SuppressWarnings("unchecked")
   private String callJiraApi(Map<String, Object> payload) {
     String endpoint = jiraConfig.getHost() + "/rest/api/3/issue";
@@ -224,7 +261,7 @@ public class JiraService {
           .bodyValue(payload)
           .retrieve()
           .bodyToMono(Map.class)
-          .subscribeOn(Schedulers.boundedElastic()) // nio 스레드 외부에서 block() 실행
+          .subscribeOn(Schedulers.boundedElastic())
           .block();
 
       if (response != null && response.containsKey("key")) {
@@ -242,9 +279,6 @@ public class JiraService {
     }
   }
 
-  /**
-   * "Basic Base64(email:apiToken)" 형식의 Authorization 헤더 값을 생성합니다.
-   */
   private String buildBasicAuthHeader() {
     String credentials = jiraConfig.getEmail() + ":" + jiraConfig.getApiToken();
     String encoded = Base64.getEncoder()
@@ -252,10 +286,6 @@ public class JiraService {
     return "Basic " + encoded;
   }
 
-  /**
-   * auto 모드인 경우 HealingStrategy를 호출합니다.
-   * manual 모드이거나 구현체가 없으면 아무 것도 하지 않습니다.
-   */
   private void triggerHealingIfAuto(String issueKey, String summary, String description) {
     if (!"auto".equalsIgnoreCase(healingMode)) {
       log.info("[Jira] manual 모드 - Healing 로직을 건너뜁니다. key={}", issueKey);
