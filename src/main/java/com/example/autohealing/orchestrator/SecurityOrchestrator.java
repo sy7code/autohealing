@@ -1,8 +1,7 @@
 package com.example.autohealing.orchestrator;
 
 import com.example.autohealing.ai.AiRemediationService;
-import com.example.autohealing.client.SnykClient;
-import com.example.autohealing.parser.IssueManager;
+import com.example.autohealing.client.SnykCliScannerService;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import com.example.autohealing.service.JiraService;
 import lombok.RequiredArgsConstructor;
@@ -15,7 +14,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 
 /**
  * GitHub Webhook 수신 후 2단계 보안 분석 + AI 자동 수정을 오케스트레이션하는 서비스.
@@ -26,10 +24,10 @@ import java.util.Map;
  * └──────────────────────────────────────────────────────────┘
  *                        ↓ 202 반환
  * ┌─ Step 2 (@Async, securityTaskExecutor) ─────────────────┐
- * │ A. Snyk 스캔 → rawVulns                                  │
- * │ B. UnifiedIssue 파싱                                      │
+ * │ A. Snyk CLI 스캔 (snyk test --json)                      │
+ * │ B. UnifiedIssue 파싱 (SnykCliScannerService 내부 처리)   │
  * │ C. CRITICAL/HIGH 취약점별 AI 자동 수정 시도               │
- * │ D. Jira 티켓 최종 업데이트                                │
+ * │ D. Jira 티켓 최종 업데이트 + 개별 티켓 생성               │
  * └──────────────────────────────────────────────────────────┘
  * </pre>
  */
@@ -39,11 +37,10 @@ import java.util.Map;
 public class SecurityOrchestrator {
 
   private final JiraService jiraService;
-  private final SnykClient snykClient;
-  private final IssueManager issueManager;
+  private final SnykCliScannerService snykCliScannerService;
   private final AiRemediationService aiRemediationService;
 
-  @Value("${ai.local-repo-path:}")
+  @Value("${LOCAL_REPO_PATH:}")
   private String localRepoPath;
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -65,9 +62,10 @@ public class SecurityOrchestrator {
         저장소  : %s
         커밋 ID : %s
         작성자  : %s
+        스캐너  : Snyk CLI
         AI 엔진 : %s
         ──────────────────────────────
-        ⏳ Snyk 스캔이 백그라운드에서 실행 중입니다.
+        ⏳ Snyk CLI 스캔이 백그라운드에서 실행 중입니다.
         스캔 완료 후 이 티켓이 자동으로 업데이트됩니다.
         """, repoName, commitId, committer, aiRemediationService.providerName());
 
@@ -75,42 +73,52 @@ public class SecurityOrchestrator {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Step 2: 비동기 Snyk 스캔 + AI 수정 + Jira 업데이트
+  // Step 2: 비동기 Snyk CLI 스캔 + AI 수정 + Jira 업데이트
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * 백그라운드에서 Snyk 스캔 → AI 코드 수정 → Jira 티켓 업데이트를 실행합니다.
+   * 백그라운드에서 Snyk CLI 스캔 → AI 코드 수정 → Jira 티켓 업데이트를 실행합니다.
+   *
+   * @param issueKey Step1에서 생성된 Jira 이슈 키
+   * @param repoName 저장소명
+   * @param scanPath 스캔할 프로젝트 경로 (null이면 LOCAL_REPO_PATH 사용)
    */
   @Async("securityTaskExecutor")
-  public void runSnykScanAndUpdate(String issueKey, String repoName) {
+  public void runSnykScanAndUpdate(String issueKey, String repoName, String scanPath) {
     log.info("[Orchestrator][Async] Step2 시작 - issueKey={}, repo={}, aiEngine={}",
         issueKey, repoName, aiRemediationService.providerName());
 
     try {
-      // A. Snyk 스캔 (Token 없으면 Mock 데이터)
-      List<Map<String, Object>> rawVulns = snykClient.fetchVulnerabilities();
-      log.info("[Orchestrator][Async] Snyk 완료 - 원시 취약점 수: {}", rawVulns.size());
-
-      // B. UnifiedIssue 파싱
-      List<UnifiedIssue> issues = issueManager.parse("SNYK", Map.of("vulnerabilities", rawVulns));
+      // A. Snyk CLI 스캔
+      String targetPath = (scanPath != null && !scanPath.isBlank()) ? scanPath : localRepoPath;
+      List<UnifiedIssue> issues = snykCliScannerService.scan(targetPath);
+      log.info("[Orchestrator][Async] CLI 스캔 완료 - 취약점 {}건", issues.size());
 
       if (issues.isEmpty()) {
         updateWithNoIssues(issueKey, repoName);
         return;
       }
 
-      // C. CRITICAL/HIGH → AI 자동 수정
+      // B. CRITICAL/HIGH → AI 자동 수정
       int aiFixedCount = applyAiRemediation(issues);
 
-      // D. Jira 최종 업데이트
+      // C. Jira 최종 업데이트
       updateWithVulnerabilities(issueKey, repoName, issues, aiFixedCount);
 
     } catch (Exception e) {
       log.error("[Orchestrator][Async] 오류 발생 - issueKey={}", issueKey, e);
       jiraService.updateIssue(issueKey,
           "[보안 분석 실패] " + repoName,
-          "Snyk 스캔 중 오류: " + e.getMessage());
+          "Snyk CLI 스캔 중 오류: " + e.getMessage());
     }
+  }
+
+  /**
+   * 하위 호환용 오버로드 - scanPath를 생략하면 LOCAL_REPO_PATH 사용.
+   */
+  @Async("securityTaskExecutor")
+  public void runSnykScanAndUpdate(String issueKey, String repoName) {
+    runSnykScanAndUpdate(issueKey, repoName, null);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -169,7 +177,7 @@ public class SecurityOrchestrator {
     if (description == null)
       return null;
     for (String line : description.lines().toList()) {
-      if (line.toLowerCase().startsWith("파일") || line.toLowerCase().startsWith("file")) {
+      if (line.toLowerCase().startsWith("패키지 경로") || line.toLowerCase().startsWith("file")) {
         String[] parts = line.split(":", 2);
         if (parts.length == 2)
           return parts[1].trim();
@@ -187,20 +195,22 @@ public class SecurityOrchestrator {
     jiraService.updateIssue(
         issueKey,
         "[보안 분석 완료] " + repoName + " - 취약점 없음 ✅",
-        "✅ Snyk 스캔 완료: 감지된 취약점이 없습니다.");
+        "✅ Snyk CLI 스캔 완료: 감지된 취약점이 없습니다.");
   }
 
   private void updateWithVulnerabilities(String issueKey, String repoName,
       List<UnifiedIssue> issues, int aiFixedCount) {
-    long critical = issues.stream().filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL).count();
-    long high = issues.stream().filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH).count();
+    long critical = issues.stream()
+        .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL).count();
+    long high = issues.stream()
+        .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH).count();
 
     String summary = String.format(
         "[보안 분석 완료] %s - 취약점 %d건 (C:%d/H:%d) | AI수정 %d건 ⚠️",
         repoName, issues.size(), critical, high, aiFixedCount);
 
     StringBuilder sb = new StringBuilder();
-    sb.append(String.format("⚠️ Snyk 스캔 완료: %d건 발견%n", issues.size()));
+    sb.append(String.format("⚠️ Snyk CLI 스캔 완료: %d건 발견%n", issues.size()));
     sb.append(String.format("🤖 AI(%s) 자동 수정: %d건%n", aiRemediationService.providerName(), aiFixedCount));
     sb.append("──────────────────────────────\n");
     for (int i = 0; i < issues.size(); i++) {
@@ -208,14 +218,13 @@ public class SecurityOrchestrator {
       sb.append(String.format("[%d] [%s] %s%n    ID: %s%n%n",
           i + 1, issue.getSeverity(), issue.getTitle(), issue.getId()));
     }
-    sb.append("──────────────────────────────\n");
     if (aiFixedCount > 0) {
       sb.append(String.format("🔧 %d건은 AI가 수정 코드를 생성했습니다.", aiFixedCount));
     }
 
     jiraService.updateIssue(issueKey, summary, sb.toString());
 
-    // CRITICAL/HIGH 개별 Jira 티켓 추가 생성
+    // CRITICAL/HIGH 개별 Jira 티켓 생성
     issues.stream()
         .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL
             || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
