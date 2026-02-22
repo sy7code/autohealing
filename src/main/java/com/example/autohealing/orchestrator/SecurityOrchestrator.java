@@ -20,19 +20,17 @@ import java.util.Map;
 /**
  * GitHub Webhook 수신 후 2단계 보안 분석 + AI 자동 수정을 오케스트레이션하는 서비스.
  *
- * <h3>실행 흐름</h3>
- * 
  * <pre>
- * ┌─ Step 1 (동기) ───────────────────────────────────────────┐
- * │ 웹훅 수신 즉시 "보안 분석 중" Jira 티켓 생성 → issueKey   │
- * └───────────────────────────────────────────────────────────┘
+ * ┌─ Step 1 (동기) ─────────────────────────────────────────┐
+ * │ 웹훅 수신 즉시 "보안 분석 중" Jira 티켓 생성 → issueKey  │
+ * └──────────────────────────────────────────────────────────┘
  *                        ↓ 202 반환
- * ┌─ Step 2 (@Async, securityTaskExecutor) ──────────────────┐
- * │ A. Snyk 스캔 → rawVulns                                   │
- * │ B. UnifiedIssue 파싱                                       │
+ * ┌─ Step 2 (@Async, securityTaskExecutor) ─────────────────┐
+ * │ A. Snyk 스캔 → rawVulns                                  │
+ * │ B. UnifiedIssue 파싱                                      │
  * │ C. CRITICAL/HIGH 취약점별 AI 자동 수정 시도               │
- * │ D. Jira 티켓 최종 업데이트                                 │
- * └───────────────────────────────────────────────────────────┘
+ * │ D. Jira 티켓 최종 업데이트                                │
+ * └──────────────────────────────────────────────────────────┘
  * </pre>
  */
 @Slf4j
@@ -52,6 +50,11 @@ public class SecurityOrchestrator {
   // Step 1: 즉시 응답용 "분석 중" 티켓 생성 (동기)
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * 웹훅 이벤트를 수신하고 즉시 "분석 중" Jira 티켓을 생성합니다.
+   *
+   * @return 생성된 Jira 이슈 키 (예: "SCRUM-42"). 실패 시 null.
+   */
   public String startAnalysis(String repoName, String commitId, String committer) {
     log.info("[Orchestrator] 보안 분석 시작 - repo={}, commit={}", repoName, commitId);
 
@@ -75,13 +78,16 @@ public class SecurityOrchestrator {
   // Step 2: 비동기 Snyk 스캔 + AI 수정 + Jira 업데이트
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * 백그라운드에서 Snyk 스캔 → AI 코드 수정 → Jira 티켓 업데이트를 실행합니다.
+   */
   @Async("securityTaskExecutor")
   public void runSnykScanAndUpdate(String issueKey, String repoName) {
     log.info("[Orchestrator][Async] Step2 시작 - issueKey={}, repo={}, aiEngine={}",
         issueKey, repoName, aiRemediationService.providerName());
 
     try {
-      // A. Snyk 스캔
+      // A. Snyk 스캔 (Token 없으면 Mock 데이터)
       List<Map<String, Object>> rawVulns = snykClient.fetchVulnerabilities();
       log.info("[Orchestrator][Async] Snyk 완료 - 원시 취약점 수: {}", rawVulns.size());
 
@@ -103,7 +109,7 @@ public class SecurityOrchestrator {
       log.error("[Orchestrator][Async] 오류 발생 - issueKey={}", issueKey, e);
       jiraService.updateIssue(issueKey,
           "[보안 분석 실패] " + repoName,
-          "오류: " + e.getMessage());
+          "Snyk 스캔 중 오류: " + e.getMessage());
     }
   }
 
@@ -119,7 +125,7 @@ public class SecurityOrchestrator {
             || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
         .toList();
 
-    log.info("[Orchestrator][AI] CRITICAL/HIGH 취약점 {}건 AI 수정 시도", targets.size());
+    log.info("[Orchestrator][AI] CRITICAL/HIGH {}건 AI 수정 시도", targets.size());
 
     for (UnifiedIssue issue : targets) {
       try {
@@ -177,6 +183,7 @@ public class SecurityOrchestrator {
   // ─────────────────────────────────────────────────────────────────────────
 
   private void updateWithNoIssues(String issueKey, String repoName) {
+    log.info("[Orchestrator][Async] 취약점 없음 - 티켓 업데이트: {}", issueKey);
     jiraService.updateIssue(
         issueKey,
         "[보안 분석 완료] " + repoName + " - 취약점 없음 ✅",
@@ -201,16 +208,20 @@ public class SecurityOrchestrator {
       sb.append(String.format("[%d] [%s] %s%n    ID: %s%n%n",
           i + 1, issue.getSeverity(), issue.getTitle(), issue.getId()));
     }
+    sb.append("──────────────────────────────\n");
+    if (aiFixedCount > 0) {
+      sb.append(String.format("🔧 %d건은 AI가 수정 코드를 생성했습니다.", aiFixedCount));
+    }
 
     jiraService.updateIssue(issueKey, summary, sb.toString());
 
-    // CRITICAL/HIGH 개별 티켓 생성
+    // CRITICAL/HIGH 개별 Jira 티켓 추가 생성
     issues.stream()
         .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL
             || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
         .forEach(issue -> {
           String key = jiraService.createIssue(issue.getTitle(), issue.getDescription());
-          log.info("[Orchestrator] 개별 티켓 생성: {} → {}", issue.getId(), key);
+          log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), key);
         });
   }
 }
