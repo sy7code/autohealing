@@ -55,16 +55,25 @@ public class JiraService {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
+   * (하위 호환용) 기존 인자만 받는 메서드
+   */
+  public String createIssue(String summary, String description) {
+    return createIssue(summary, description, null, null);
+  }
+
+  /**
    * Jira 이슈를 생성합니다.
    *
    * @param summary     이슈 제목 (1줄 요약)
    * @param description 이슈 상세 설명 (ADF 본문에 삽입)
+   * @param severity    Snyk 위험도 (우선순위 매핑용)
+   * @param labels      추가할 라벨 목록
    * @return 생성된 이슈의 key (예: "SCRUM-42"), 실패 시 null
    */
-  public String createIssue(String summary, String description) {
+  public String createIssue(String summary, String description, String severity, List<String> labels) {
     log.info("[Jira] 이슈 생성 시작 - mode={}, summary={}", healingMode, summary);
 
-    Map<String, Object> payload = buildPayload(summary, description);
+    Map<String, Object> payload = buildPayload(summary, description, severity, labels);
     String createdKey = callJiraApi(payload);
 
     if (createdKey == null) {
@@ -119,6 +128,88 @@ public class JiraService {
     }
   }
 
+  /**
+   * 이슈의 상태를 변경(Transition)합니다. (예: "In Progress", "Done")
+   * Jira API 특성상 Transition ID를 먼저 조회 후 그 ID로 전환 요청해야 할 수도 있지만,
+   * 이름 기반 매칭 또는 고정 ID를 활용하여 변경 요청을 수행합니다.
+   * 여기서는 Transition ID를 조회하여 매치되는 이름을 찾는 로직을 간소화하여 포함합니다.
+   *
+   * @param issueKey       이슈 키
+   * @param transitionName 전환할 상태 이름 (예: "In Progress", "Done")
+   * @return 성공 여부
+   */
+  @SuppressWarnings("unchecked")
+  public boolean transitionIssue(String issueKey, String transitionName) {
+    log.info("[Jira] 이슈 상태 전환 시도 - key={}, target={}", issueKey, transitionName);
+    String endpoint = jiraConfig.getHost() + "/rest/api/3/issue/" + issueKey + "/transitions";
+    String authHeader = buildBasicAuthHeader();
+
+    try {
+      // 1. 이용 가능한 transition 목록 가져오기
+      Map<String, Object> transitionsResponse = webClient.get()
+          .uri(endpoint)
+          .header(HttpHeaders.AUTHORIZATION, authHeader)
+          .retrieve()
+          .bodyToMono(Map.class)
+          .block();
+
+      if (transitionsResponse == null || !transitionsResponse.containsKey("transitions")) {
+        log.warn("[Jira] Transition 목록을 가져올 수 없습니다: {}", issueKey);
+        return false;
+      }
+
+      List<Map<String, Object>> transitions = (List<Map<String, Object>>) transitionsResponse.get("transitions");
+      String transitionId = null;
+      java.util.List<String> availableNames = new java.util.ArrayList<>();
+
+      for (Map<String, Object> tr : transitions) {
+        String name = (String) tr.get("name");
+        if (name != null) {
+          availableNames.add(name);
+          String lowerName = name.toLowerCase();
+          String lowerTarget = transitionName.toLowerCase();
+
+          if (lowerName.equals(lowerTarget) ||
+              (lowerTarget.equals("in progress") && (lowerName.contains("progress") || lowerName.contains("진행"))) ||
+              (lowerTarget.equals("done") && (lowerName.contains("done") || lowerName.contains("완료")))) {
+            transitionId = (String) tr.get("id");
+            break;
+          }
+        }
+      }
+
+      if (transitionId == null) {
+        log.warn("[Jira] 유효한 Transition 이름을 찾을 수 없습니다: {} (target={}), available: {}", issueKey, transitionName,
+            availableNames);
+        return false;
+      }
+
+      // 2. 찾아낸 transition ID로 상태 전환 수행
+      Map<String, Object> payload = Map.of(
+          "transition", Map.of("id", transitionId));
+
+      webClient.post()
+          .uri(endpoint)
+          .header(HttpHeaders.AUTHORIZATION, authHeader)
+          .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+          .bodyValue(payload)
+          .retrieve()
+          .toBodilessEntity()
+          .block();
+
+      log.info("[Jira] 이슈 상태 전환 성공 - key={}, to={}", issueKey, transitionName);
+      return true;
+
+    } catch (WebClientResponseException ex) {
+      log.error("[Jira] 상태 전환 실패 - key={}, status={}, body={}", issueKey, ex.getStatusCode(),
+          ex.getResponseBodyAsString());
+      return false;
+    } catch (Exception ex) {
+      log.error("[Jira] 상태 전환 중 오류", ex);
+      return false;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Private Helpers
   // ─────────────────────────────────────────────────────────────────────────
@@ -127,7 +218,7 @@ public class JiraService {
    * Jira API 요청 바디(payload)를 조립합니다.
    * Description은 Atlassian Document Format (ADF)을 사용합니다.
    */
-  private Map<String, Object> buildPayload(String summary, String description) {
+  private Map<String, Object> buildPayload(String summary, String description, String severity, List<String> labels) {
     // ADF: doc > paragraph > text
     Map<String, Object> textNode = Map.of(
         "type", "text",
@@ -140,12 +231,35 @@ public class JiraService {
         "version", 1,
         "content", List.of(paragraph));
 
-    return Map.of(
-        "fields", Map.of(
-            "project", Map.of("key", jiraConfig.getProjectKey()),
-            "summary", summary,
-            "description", adfDocument,
-            "issuetype", Map.of("name", "Task")));
+    String priorityName = mapSeverityToPriority(severity);
+
+    java.util.Map<String, Object> fields = new java.util.HashMap<>(Map.of(
+        "project", Map.of("key", jiraConfig.getProjectKey()),
+        "summary", summary,
+        "description", adfDocument,
+        "issuetype", Map.of("name", "Task"),
+        "priority", Map.of("name", priorityName)));
+
+    if (labels != null && !labels.isEmpty()) {
+      fields.put("labels", labels);
+    }
+
+    return Map.of("fields", fields);
+  }
+
+  /**
+   * Snyk Severity 레벨을 Jira Priority 문자열로 변환합니다.
+   */
+  private String mapSeverityToPriority(String severity) {
+    if (severity == null)
+      return "Medium";
+    return switch (severity.toUpperCase()) {
+      case "CRITICAL" -> "Highest";
+      case "HIGH" -> "High";
+      case "MEDIUM" -> "Medium";
+      case "LOW" -> "Low";
+      default -> "Medium";
+    };
   }
 
   /**

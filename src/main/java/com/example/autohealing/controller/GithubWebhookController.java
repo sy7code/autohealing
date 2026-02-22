@@ -46,6 +46,11 @@ public class GithubWebhookController {
   public Mono<ResponseEntity<Map<String, String>>> handleGithubWebhook(
       @RequestBody Map<String, Object> payload) {
 
+    // PR Merge 이벤트 처리 분기
+    if (payload.containsKey("pull_request")) {
+      return handlePullRequestEvent(payload);
+    }
+
     String repoName = extractRepoName(payload);
     String commitId = extractCommitId(payload);
     String committer = extractCommitter(payload);
@@ -104,6 +109,36 @@ public class GithubWebhookController {
   // ─────────────────────────────────────────────────────────────────────────
   // Private – 페이로드 파싱 헬퍼
   // ─────────────────────────────────────────────────────────────────────────
+
+  @SuppressWarnings("unchecked")
+  private Mono<ResponseEntity<Map<String, String>>> handlePullRequestEvent(Map<String, Object> payload) {
+    String action = (String) payload.get("action");
+    Map<String, Object> pr = (Map<String, Object>) payload.get("pull_request");
+
+    if ("closed".equals(action) && Boolean.TRUE.equals(pr.get("merged"))) {
+      String body = (String) pr.get("body");
+      log.info("[Webhook] PR Merge 감지됨");
+
+      if (body != null && body.contains("**🔗 연동된 Jira 티켓:**")) {
+        int idx = body.indexOf("**🔗 연동된 Jira 티켓:**") + "**🔗 연동된 Jira 티켓:**".length();
+        String jiraKey = body.substring(idx).trim().split("\\s+")[0]; // 키만 추출
+
+        if (!jiraKey.isBlank()) {
+          log.info("[Webhook] PR 본문에서 Jira 티켓 추출: {}. 상태 'Done'으로 전환 시도.", jiraKey);
+          return Mono.fromCallable(() -> orchestrator.completeJiraTicket(jiraKey))
+              .subscribeOn(Schedulers.boundedElastic())
+              .map(success -> {
+                if (Boolean.TRUE.equals(success)) {
+                  return ResponseEntity.ok(Map.of("status", "success", "message", jiraKey + " 상태 업데이트 완료"));
+                } else {
+                  return ResponseEntity.ok(Map.of("status", "failed", "message", jiraKey + " 상태 업데이트 실패"));
+                }
+              });
+        }
+      }
+    }
+    return Mono.just(ResponseEntity.ok(Map.of("status", "ignored", "message", "PR 이벤트 무시처리")));
+  }
 
   @SuppressWarnings("unchecked")
   private String extractRepoName(Map<String, Object> payload) {

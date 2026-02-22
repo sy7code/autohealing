@@ -104,10 +104,10 @@ public class SecurityOrchestrator {
       }
 
       // B. CRITICAL/HIGH → AI 자동 수정
-      int aiFixedCount = applyAiRemediation(issues);
+      java.util.Set<String> aiFixedIds = applyAiRemediation(issues);
 
       // C. Jira 최종 업데이트
-      updateWithVulnerabilities(issueKey, repoName, issues, aiFixedCount);
+      updateWithVulnerabilities(issueKey, repoName, issues, aiFixedIds);
 
     } catch (Exception e) {
       log.error("[Orchestrator][Async] 오류 발생 - issueKey={}", issueKey, e);
@@ -129,8 +129,8 @@ public class SecurityOrchestrator {
   // Private – AI 수정
   // ─────────────────────────────────────────────────────────────────────────
 
-  private int applyAiRemediation(List<UnifiedIssue> issues) {
-    int fixedCount = 0;
+  private java.util.Set<String> applyAiRemediation(List<UnifiedIssue> issues) {
+    java.util.Set<String> fixedIds = new java.util.HashSet<>();
 
     List<UnifiedIssue> targets = issues.stream()
         .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL
@@ -139,34 +139,79 @@ public class SecurityOrchestrator {
 
     java.util.Set<String> processedIds = new java.util.HashSet<>();
 
-    log.info("[Orchestrator][AI] CRITICAL/HIGH {}건 AI 수정 시도", targets.size());
+    log.info("[Orchestrator][AI] CRITICAL/HIGH {}건 AI 수정 시도 및 티켓 생성", targets.size());
 
     for (UnifiedIssue issue : targets) {
       if (!processedIds.add(issue.getId())) {
-        log.info("[Orchestrator][AI] 이미 처리 중인 취약점 ID 건너뜀: {}", issue.getId());
         continue;
       }
+
+      boolean isAiFixed = false;
+      String fixedCode = "";
+      String explanation = "";
+      String originalCode = "";
+
       try {
-        String originalCode = readSourceFile(issue);
+        originalCode = readSourceFile(issue);
         String vulnInfo = buildVulnerabilityInfo(issue);
         AiRemediationResult result = aiRemediationService.fixCode(originalCode, vulnInfo);
-        String fixedCode = result.getFixedCode();
-        String explanation = result.getExplanation();
+        fixedCode = result.getFixedCode();
+        explanation = result.getExplanation();
 
         log.info("[Orchestrator][AI] 수정 완료 - id={} ({}자→{}자)",
             issue.getId(), originalCode.length(), fixedCode.length());
 
-        githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
-
-        // 메모리에 설명 남겨두었다가 개별 Jira 티켓 생성 시 합치기 위해 임시 저장 (issue.getId() 매핑)
-        issue.setDescription(issue.getDescription() + "\n\n=== AI 자동 수정 내용 요약 ===\n" + explanation);
-
-        fixedCount++;
+        fixedIds.add(issue.getId());
+        isAiFixed = true;
       } catch (Exception e) {
         log.warn("[Orchestrator][AI] 수정 실패 - id={}", issue.getId(), e);
+        explanation = "AI 자동 수정 중 오류 발생: " + e.getMessage();
+      }
+
+      // 1. 개별 Jira 티켓 생성
+      java.util.List<String> labels = new java.util.ArrayList<>();
+      if (isAiFixed) {
+        labels.add("AI-Fixed");
+        labels.add("Security-Patch");
+      }
+
+      String markdownDesc = String.format("""
+          | 특성 | 세부 정보 |
+          | :--- | :--- |
+          | **취약점 ID** | %s |
+          | **위험도**   | %s |
+          | **패키지 경로**| %s |
+          | **AI 자동수정**| %s |
+
+          ### 💡 상세 내용
+          %s
+
+          %s
+          """,
+          issue.getId(),
+          issue.getSeverity().name(),
+          extractFilePath(issue.getDescription()),
+          isAiFixed ? "✅ 예 (Github PR 생성됨)" : "❌ 아니오",
+          issue.getDescription(),
+          isAiFixed ? ("=== AI 자동 수정 내용 요약 ===\n" + explanation) : "");
+
+      String jiraKey = jiraService.createIssue(
+          issue.getTitle(), markdownDesc, issue.getSeverity().name(), labels);
+
+      log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), jiraKey);
+
+      // 2. AI 수정 성공 시 PR에 Jira Key 넘겨주기 및 In Progress 전환
+      if (isAiFixed && jiraKey != null) {
+        jiraService.transitionIssue(jiraKey, "In Progress");
+        // PR 생성
+        githubService.createPullRequest(issue, originalCode, fixedCode,
+            explanation + "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey);
+      } else if (isAiFixed) {
+        // 티켓 생성 실패했어도 PR은 올려야 한다면 fallback (여기서는 jiraKey 없이)
+        githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
       }
     }
-    return fixedCount;
+    return fixedIds;
   }
 
   private String readSourceFile(UnifiedIssue issue) {
@@ -219,7 +264,8 @@ public class SecurityOrchestrator {
   }
 
   private void updateWithVulnerabilities(String issueKey, String repoName,
-      List<UnifiedIssue> issues, int aiFixedCount) {
+      List<UnifiedIssue> issues, java.util.Set<String> aiFixedIds) {
+    int aiFixedCount = aiFixedIds.size();
     long critical = issues.stream()
         .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL).count();
     long high = issues.stream()
@@ -230,12 +276,12 @@ public class SecurityOrchestrator {
         repoName, issues.size(), critical, high, aiFixedCount);
 
     StringBuilder sb = new StringBuilder();
-    sb.append(String.format("⚠️ Snyk CLI 스캔 완료: %d건 발견%n", issues.size()));
-    sb.append(String.format("🤖 AI(%s) 자동 수정: %d건%n", aiRemediationService.providerName(), aiFixedCount));
+    sb.append(String.format("⚠️ Snyk CLI 스캔 완료: %d건 발견\n", issues.size()));
+    sb.append(String.format("🤖 AI(%s) 자동 수정: %d건\n", aiRemediationService.providerName(), aiFixedCount));
     sb.append("──────────────────────────────\n");
     for (int i = 0; i < issues.size(); i++) {
       UnifiedIssue issue = issues.get(i);
-      sb.append(String.format("[%d] [%s] %s%n    ID: %s%n%n",
+      sb.append(String.format("[%d] [%s] %s\n    ID: %s\n\n",
           i + 1, issue.getSeverity(), issue.getTitle(), issue.getId()));
     }
     if (aiFixedCount > 0) {
@@ -243,14 +289,16 @@ public class SecurityOrchestrator {
     }
 
     jiraService.updateIssue(issueKey, summary, sb.toString());
+  }
 
-    // CRITICAL/HIGH 개별 Jira 티켓 생성
-    issues.stream()
-        .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL
-            || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
-        .forEach(issue -> {
-          String key = jiraService.createIssue(issue.getTitle(), issue.getDescription());
-          log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), key);
-        });
+  /**
+   * PR Merge 이벤트 수신 시 티켓 상태를 Done으로 전환합니다.
+   *
+   * @param jiraKey 대상 Jira 티켓 키
+   * @return 상태 전환 성공 여부
+   */
+  public boolean completeJiraTicket(String jiraKey) {
+    log.info("[Orchestrator] PR Merge 감지 - Jira 티켓 완료 처리: {}", jiraKey);
+    return jiraService.transitionIssue(jiraKey, "Done");
   }
 }
