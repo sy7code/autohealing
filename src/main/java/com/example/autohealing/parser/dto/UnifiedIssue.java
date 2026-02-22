@@ -35,7 +35,8 @@ public class UnifiedIssue {
   private final String title;
 
   /** Jira 티켓 Description으로 사용될 상세 내용 */
-  private final String description;
+  @lombok.Setter
+  private String description;
 
   /** 표준화된 위험도 등급 */
   private final SeverityLevel severity;
