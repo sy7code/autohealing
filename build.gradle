@@ -1,65 +1,20 @@
-plugins {
-	id 'java'
-	id 'org.springframework.boot' version '4.0.2'
-	id 'io.spring.dependency-management' version '1.1.7'
-}
+// [AUTO-HEALING MOCK] GEMINI_API_KEY 미설정 - 수동 수정 필요
+// 보안 취약점: ID: SNYK-JAVA-COMNIMBUSDS-6247633 | 심각도: HIGH | 제목: [Snyk][HIGH] Allocation of Resources Without Limits or Throttling
+// TODO: 아래 코드의 취약점을 수동으로 수정해 주세요.
 
-group = 'com.example'
-version = '0.0.1-SNAPSHOT'
-description = 'Demo project for Spring Boot'
+// 잘못된 파일 경로 형식: demo@0.0.1-SNAPSHOT → com.nimbusds:nimbus-jose-jwt@9.30.2
+취약점 ID  : SNYK-JAVA-COMNIMBUSDS-6247633
+패키지 경로 : demo@0.0.1-SNAPSHOT → com.nimbusds:nimbus-jose-jwt@9.30.2
+해결 버전   : 9.37.2
+상세 내용   : ## Overview
+[com.nimbusds:nimbus-jose-jwt](https://connect2id.com/products/nimbus-jose-jwt) is a library for JSON Web Tokens (JWT)
 
-java {
-	toolchain {
-		languageVersion = JavaLanguageVersion.of(21)
-	}
-}
+Affected versions of this package are vulnerable to Allocation of Resources Without Limits or Throttling due to a large JWE `p2c` header value (AKA iteration count) for the `PasswordBasedDecrypter` (PBKDF2) class. An attacker can cause resource consumption by specifying an excessively large iteration count.
+## Remediation
+Upgrade `com.nimbusds:nimbus-jose-jwt` to version 9.37.2 or higher.
+## References
+- [Bitbucket Commit](https://bitbucket.org/connect2id/nimbus-jose-jwt/commits/3b3b77e)
+- [Bitbucket Issue](https://bitbucket.org/connect2id/nimbus-jose-jwt/issues/526/)
 
-configurations {
-	compileOnly {
-		extendsFrom annotationProcessor
-	}
-}
+CVE         : ["CVE-2023-52428"]
 
-repositories {
-	mavenCentral()
-}
-
-dependencies {
-	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-	implementation 'org.springframework.boot:spring-boot-starter-webflux'
-	compileOnly 'org.projectlombok:lombok'
-	annotationProcessor 'org.projectlombok:lombok'
-	// 커스텀 @ConfigurationProperties 메타데이터 생성 (IDE 자동완성 + 경고 해소)
-	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
-	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-webflux-test'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-
-	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구
-	implementation 'com.azure.resourcemanager:azure-resourcemanager:2.34.0'
-	implementation 'com.azure:azure-identity:1.11.0'
-
-	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
-	runtimeOnly 'org.postgresql:postgresql'
-
-
-}
-
-tasks.named('test') {
-	useJUnitPlatform()
-    
-    // .env 파일 로드 설정
-    doFirst {
-        def envFile = file('.env')
-        if (envFile.exists()) {
-            envFile.eachLine { line ->
-                if (line.trim() && !line.startsWith('#')) {
-                    def (key, value) = line.tokenize('=')
-                    if (key && value) {
-                        systemProperty key.trim(), value.trim()
-                    }
-                }
-            }
-        }
-    }
-}
