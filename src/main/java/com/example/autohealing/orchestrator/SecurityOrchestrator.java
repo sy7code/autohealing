@@ -6,6 +6,8 @@ import com.example.autohealing.client.SnykCliScannerService;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import com.example.autohealing.service.JiraService;
 import com.example.autohealing.service.CodeValidatorService;
+import com.example.autohealing.entity.SecurityLog;
+import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.service.GithubService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -44,9 +46,13 @@ public class SecurityOrchestrator {
   private final AiRemediationService aiRemediationService;
   private final GithubService githubService;
   private final CodeValidatorService codeValidatorService;
+  private final SecurityLogRepository securityLogRepository;
 
   @Value("${LOCAL_REPO_PATH:}")
   private String localRepoPath;
+
+  @Value("${VERCEL_FRONTEND_URL:http://localhost:3000}")
+  private String vercelUrl;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 1: 즉시 응답용 "분석 중" 티켓 생성 (동기)
@@ -171,12 +177,24 @@ public class SecurityOrchestrator {
         explanation = "AI 자동 수정 중 오류 발생: " + e.getMessage();
       }
 
+      // 0. DB에 SecurityLog 저장
+      SecurityLog logEntry = new SecurityLog(
+          issue.getTitle(), issue.getTitle(), issue.getSeverity().name(), isAiFixed ? "AI_FIXED" : "DETECTED");
+      logEntry.setSnykId(issue.getId());
+      logEntry.setAiFixed(isAiFixed);
+      logEntry.setFixExplanation(explanation);
+      logEntry = securityLogRepository.save(logEntry);
+      log.info("[Orchestrator] DB 저장 완료 - dbId={}, snykId={}", logEntry.getId(), issue.getId());
+
       // 1. 개별 Jira 티켓 생성
       java.util.List<String> labels = new java.util.ArrayList<>();
+      labels.add("Auto-Fix");
       if (isAiFixed) {
         labels.add("AI-Fixed");
         labels.add("Security-Patch");
       }
+
+      String detailLink = vercelUrl + "/detail/" + logEntry.getId();
 
       String markdownDesc = String.format("""
           | 특성 | 세부 정보 |
@@ -185,6 +203,7 @@ public class SecurityOrchestrator {
           | **위험도**   | %s |
           | **패키지 경로**| %s |
           | **AI 자동수정**| %s |
+          | **대시보드 상세** | [상세 페이지 보기](%s) |
 
           ### 💡 상세 내용
           %s
@@ -195,11 +214,18 @@ public class SecurityOrchestrator {
           issue.getSeverity().name(),
           extractFilePath(issue.getDescription()),
           isAiFixed ? "✅ 예 (Github PR 생성됨)" : "❌ 아니오",
+          detailLink,
           issue.getDescription(),
           isAiFixed ? ("=== AI 자동 수정 내용 요약 ===\n" + explanation) : "");
 
       String jiraKey = jiraService.createIssue(
           issue.getTitle(), markdownDesc, issue.getSeverity().name(), labels);
+
+      // DB에 Jira Key 업데이트
+      if (jiraKey != null) {
+        logEntry.setJiraKey(jiraKey);
+        securityLogRepository.save(logEntry);
+      }
 
       log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), jiraKey);
 

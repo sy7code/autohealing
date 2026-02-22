@@ -216,6 +216,37 @@ public class GithubService {
     }
   }
 
+  /**
+   * PR 번호로 Pull Request를 머지합니다.
+   *
+   * @param prNumber PR 번호
+   * @return 머지 성공 여부
+   */
+  public boolean mergePullRequest(int prNumber) {
+    if (githubToken.isBlank() || repoName.isBlank()) {
+      log.warn("[GitHub] 인증 토큰 또는 저장소 정보가 설정되지 않아 PR 머지를 건너뜁니다.");
+      return false;
+    }
+
+    try {
+      webClient.put()
+          .uri("/repos/" + repoName + "/pulls/" + prNumber + "/merge")
+          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
+          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
+          .contentType(MediaType.APPLICATION_JSON)
+          .bodyValue(Map.of("merge_method", "squash"))
+          .retrieve()
+          .bodyToMono(Map.class)
+          .block();
+
+      log.info("[GitHub API] PR #{} 머지 성공", prNumber);
+      return true;
+    } catch (Exception e) {
+      log.error("[GitHub API] PR #{} 머지 실패", prNumber, e);
+      return false;
+    }
+  }
+
   private String extractFilePath(String description) {
     if (description == null)
       return null;
