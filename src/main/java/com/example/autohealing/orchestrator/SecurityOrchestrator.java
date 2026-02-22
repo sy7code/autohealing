@@ -43,6 +43,7 @@ public class SecurityOrchestrator {
   private final SnykCliScannerService snykCliScannerService;
   private final AiRemediationService aiRemediationService;
   private final GithubService githubService;
+  private final com.example.autohealing.service.CodeValidatorService codeValidatorService;
 
   @Value("${LOCAL_REPO_PATH:}")
   private String localRepoPath;
@@ -104,7 +105,7 @@ public class SecurityOrchestrator {
       }
 
       // B. CRITICAL/HIGH → AI 자동 수정
-      int aiFixedCount = applyAiRemediation(issues);
+      int aiFixedCount = applyAiRemediation(issueKey, issues);
 
       // C. Jira 최종 업데이트
       updateWithVulnerabilities(issueKey, repoName, issues, aiFixedCount);
@@ -129,7 +130,7 @@ public class SecurityOrchestrator {
   // Private – AI 수정
   // ─────────────────────────────────────────────────────────────────────────
 
-  private int applyAiRemediation(List<UnifiedIssue> issues) {
+  private int applyAiRemediation(String issueKey, List<UnifiedIssue> issues) {
     int fixedCount = 0;
 
     List<UnifiedIssue> targets = issues.stream()
@@ -156,12 +157,28 @@ public class SecurityOrchestrator {
         log.info("[Orchestrator][AI] 수정 완료 - id={} ({}자→{}자)",
             issue.getId(), originalCode.length(), fixedCode.length());
 
-        githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+        // 컴파일 유효성 검증 로직 추가
+        String fileName = extractFilePath(issue.getDescription());
+        if (fileName == null)
+          fileName = "Unknown.java";
 
-        // 메모리에 설명 남겨두었다가 개별 Jira 티켓 생성 시 합치기 위해 임시 저장 (issue.getId() 매핑)
-        issue.setDescription(issue.getDescription() + "\n\n=== AI 자동 수정 내용 요약 ===\n" + explanation);
+        String compileError = codeValidatorService.validateCode(fixedCode, fileName);
 
-        fixedCount++;
+        if (compileError != null) {
+          log.warn("[Orchestrator][AI] 컴파일 검증 실패 - id={}, error=\n{}", issue.getId(), compileError);
+          jiraService.addCommentToIssue(issueKey,
+              "🚨 **AI 수정안 컴파일 오류 발생**\n" +
+                  "AI가 생성한 수정 코드가 컴파일되지 않아 PR 생성을 중단했습니다.\n" +
+                  "**파일:** `" + fileName + "`\n" +
+                  "**에러 내용:**\n{code:java}\n" + compileError + "\n{code}");
+        } else {
+          // 컴파일 성공 시 PR 생성
+          githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+
+          // 메모리에 설명 남겨두었다가 갱신 시 합치기 위해 임시 저장 (issue.getId() 매핑)
+          issue.setDescription(issue.getDescription() + "\n\n=== AI 자동 수정 내용 요약 ===\n" + explanation);
+          fixedCount++;
+        }
       } catch (Exception e) {
         log.warn("[Orchestrator][AI] 수정 실패 - id={}", issue.getId(), e);
       }

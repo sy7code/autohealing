@@ -119,6 +119,50 @@ public class JiraService {
     }
   }
 
+  /**
+   * 이슈에 댓글을 추가합니다.
+   *
+   * @param issueKey 등록할 이슈 키 (예: "SCRUM-42")
+   * @param comment  등록할 댓글 본문 (ADF 포맷으로 변환됨)
+   * @return 성공 여부
+   */
+  public boolean addCommentToIssue(String issueKey, String comment) {
+    log.info("[Jira] 이슈 댓글 추가 시도 - key={}", issueKey);
+
+    String endpoint = jiraConfig.getHost() + "/rest/api/3/issue/" + issueKey + "/comment";
+    String authHeader = buildBasicAuthHeader();
+
+    // ADF 포맷 (type: doc) 구성
+    Map<String, Object> textNode = Map.of("type", "text", "text", comment);
+    Map<String, Object> paragraph = Map.of("type", "paragraph", "content", List.of(textNode));
+    Map<String, Object> adfDocument = Map.of("type", "doc", "version", 1, "content", List.of(paragraph));
+
+    Map<String, Object> payload = Map.of("body", adfDocument);
+
+    try {
+      webClient.post()
+          .uri(endpoint)
+          .header(HttpHeaders.AUTHORIZATION, authHeader)
+          .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+          .bodyValue(payload)
+          .retrieve()
+          .toBodilessEntity()
+          .subscribeOn(Schedulers.boundedElastic())
+          .block();
+
+      log.info("[Jira] 이슈 댓글 추가 성공 - key={}", issueKey);
+      return true;
+
+    } catch (WebClientResponseException ex) {
+      log.error("[Jira] 이슈 댓글 추가 실패 - key={}, status={}, body={}",
+          issueKey, ex.getStatusCode(), ex.getResponseBodyAsString());
+      return false;
+    } catch (Exception ex) {
+      log.error("[Jira] 이슈 댓글 추가 중 예기치 못한 오류 - key={}", issueKey, ex);
+      return false;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Private Helpers
   // ─────────────────────────────────────────────────────────────────────────
