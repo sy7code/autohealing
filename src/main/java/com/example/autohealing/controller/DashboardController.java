@@ -93,10 +93,22 @@ public class DashboardController {
     boolean prMerged = false;
     boolean jiraDone = false;
 
-    // 1. GitHub PR 머지
+    // 1. GitHub PR 검증 및 머지
     if (logEntry.getPrNumber() != null && logEntry.getPrNumber() > 0) {
-      prMerged = githubService.mergePullRequest(logEntry.getPrNumber().intValue());
-      log.info("[Approval] PR 머지 결과 - prNumber={}, success={}", logEntry.getPrNumber(), prMerged);
+      int prNumber = logEntry.getPrNumber().intValue();
+
+      log.info("[Approval] PR #{} 빌드/테스트 상태 확인을 시작합니다...", prNumber);
+      boolean ciSuccess = githubService.isPrTestsSuccessful(prNumber);
+      log.info("[Approval] PR #{} CI 자동 검증 결과 - passed={}", prNumber, ciSuccess);
+
+      if (!ciSuccess) {
+        return ResponseEntity.badRequest().body(Map.of(
+            "error", "아직 테스트가 완료되지 않았습니다",
+            "id", id));
+      }
+
+      prMerged = githubService.mergePullRequest(prNumber);
+      log.info("[Approval] PR 머지 결과 - prNumber={}, success={}", prNumber, prMerged);
     } else {
       log.info("[Approval] PR 번호가 없어 머지를 건너뜁니다. id={}", id);
     }

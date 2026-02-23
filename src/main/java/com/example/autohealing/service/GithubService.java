@@ -217,6 +217,87 @@ public class GithubService {
   }
 
   /**
+   * PR 의 Check Runs API 를 호출하여 빌드/테스트 상태를 확인합니다.
+   *
+   * @param prNumber PR 번호
+   * @return 성공(완료 및 success) 시 true, 진행 중이거나 실패/에러 시 false
+   */
+  public boolean isPrTestsSuccessful(int prNumber) {
+    if (githubToken.isBlank() || repoName.isBlank()) {
+      log.warn("[GitHub] 인증 토큰 또는 저장소 정보가 설정되지 않아 CI 검증을 건너뜁니다.");
+      return true;
+    }
+
+    try {
+      // 1. Get PR details to find HEAD SHA
+      Map<?, ?> prResponse = webClient.get()
+          .uri("/repos/" + repoName + "/pulls/" + prNumber)
+          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
+          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
+          .retrieve()
+          .bodyToMono(Map.class)
+          .block();
+
+      if (prResponse == null || !prResponse.containsKey("head")) {
+        log.warn("[GitHub API] PR #{} 정보를 가져오지 못했습니다.", prNumber);
+        return false;
+      }
+
+      Map<?, ?> headNode = (Map<?, ?>) prResponse.get("head");
+      String headSha = (String) headNode.get("sha");
+
+      // 2. Get check runs for HEAD SHA
+      Map<?, ?> checksResponse = webClient.get()
+          .uri("/repos/" + repoName + "/commits/" + headSha + "/check-runs")
+          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
+          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
+          .retrieve()
+          .bodyToMono(Map.class)
+          .block();
+
+      if (checksResponse == null || !checksResponse.containsKey("check_runs")) {
+        log.warn("[GitHub API] PR #{} (SHA: {})의 Check Runs 정보를 가져오지 못했습니다.", prNumber, headSha);
+        return false;
+      }
+
+      @SuppressWarnings("unchecked")
+      java.util.List<Map<String, Object>> checkRuns = (java.util.List<Map<String, Object>>) checksResponse
+          .get("check_runs");
+
+      if (checkRuns.isEmpty()) {
+        log.info("[GitHub API] PR #{}에 등록된 Check Run이 없습니다. (CI 통과 간주)", prNumber);
+        return true;
+      }
+
+      boolean allSuccess = true;
+      for (Map<?, ?> run : checkRuns) {
+        String status = (String) run.get("status");
+        String conclusion = (String) run.get("conclusion");
+        String name = (String) run.get("name");
+
+        log.info("[GitHub API] PR #{} Check Run '{}' 상태: status={}, conclusion={}", prNumber, name, status, conclusion);
+
+        if (!"completed".equals(status)) {
+          log.warn("[GitHub API] PR #{} 검증 진행 중... ({})", prNumber, name);
+          allSuccess = false;
+        } else if (!"success".equals(conclusion) && !"skipped".equals(conclusion) && !"neutral".equals(conclusion)) {
+          log.warn("[GitHub API] PR #{} 검증 실패! ({}: conclusion={})", prNumber, name, conclusion);
+          allSuccess = false;
+        }
+      }
+
+      if (allSuccess) {
+        log.info("[GitHub API] PR #{} 모든 검증 통과 완료!", prNumber);
+      }
+      return allSuccess;
+
+    } catch (Exception e) {
+      log.error("[GitHub API] PR #{} CI 상태 확인 중 오류 발생", prNumber, e);
+      return false;
+    }
+  }
+
+  /**
    * PR 번호로 Pull Request를 머지합니다.
    *
    * @param prNumber PR 번호
