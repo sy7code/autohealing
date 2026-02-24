@@ -8,9 +8,11 @@ import com.azure.resourcemanager.AzureResourceManager;
 import com.azure.resourcemanager.storage.models.StorageAccount;
 import com.example.autohealing.entity.SecurityLog;
 import com.example.autohealing.repository.SecurityLogRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+@Slf4j
 @Service
 public class AzureDetectionService {
 
@@ -46,31 +48,29 @@ public class AzureDetectionService {
       boolean isPublicAccessAllowed = Boolean.TRUE.equals(storageAccount.innerModel().allowBlobPublicAccess());
 
       if (isPublicAccessAllowed) {
-        System.out.println("⚠️ [Risk Detected] Storage Account '" + resourceName + "' allows public access.");
+        log.warn("⚠️ [Risk Detected] Storage Account '{}' allows public access.", resourceName);
 
         // 4. DB에 'Detected' 상태로 로그 저장
-        SecurityLog log = new SecurityLog(resourceName, "Anonymous Access Enabled", "High", "Detected");
-        log = securityLogRepository.save(log);
-        System.out.println("✅ Security Log Saved: ID=" + log.getId() + ", Status=" + log.getStatus());
+        SecurityLog logEntry = new SecurityLog(resourceName, "Anonymous Access Enabled", "High", "Detected");
+        logEntry = securityLogRepository.save(logEntry);
+        log.info("✅ Security Log Saved: ID={}, Status={}", logEntry.getId(), logEntry.getStatus());
 
         // 5. 자동 치료 (Auto-Healing): 공용 액세스 비활성화
-        System.out.println("🛠️ Auto-Healing initiated...");
+        log.info("🛠️ Auto-Healing initiated...");
 
-        // TODO: 'withAllowBlobPublicAccess' 메서드가 SDK 버전에 따라 다를 수 있어 잠시 주석 처리합니다.
-        // 수정을 위해 올바른 메서드로 변경 시도: disableBlobPublicAccess()
         // storageAccount.update().withAllowBlobPublicAccess(false).apply();
         storageAccount.update().disableBlobPublicAccess().apply();
 
-        System.out.println("✨ Storage Account updated: Public Access DISABLED (Simulated).");
+        log.info("✨ Storage Account updated: Public Access DISABLED (Simulated).");
 
         // 6. DB 로그 업데이트 ('Resolved')
-        log.setStatus("Resolved");
-        securityLogRepository.save(log);
-        System.out.println("✅ Security Log Updated: Status=Resolved");
+        logEntry.setStatus("Resolved");
+        securityLogRepository.save(logEntry);
+        log.info("✅ Security Log Updated: Status=Resolved");
 
         return true; // Risk found and healed
       } else {
-        System.out.println("✅ [Secure] Storage Account '" + resourceName + "' public access is disabled.");
+        log.info("✅ [Secure] Storage Account '{}' public access is disabled.", resourceName);
         return false; // No risk
       }
 
