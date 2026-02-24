@@ -1,0 +1,19 @@
+server:
+  # Azure App Service 기본 포트 80 사용. (WEBSITES_PORT 환경변수로 오버라이드 가능)
+  port: ${PORT:80}
+
+spring:
+  datasource:
+    # Supabase (PostgreSQL) 연결 정보. 민감정보는 환경변수(App Settings)에서 주입
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      # 프로덕션에서는 안전을 위해 validate 또는 none을 권장하지만 기능 유지를 위해 update 사용
+      ddl-auto: update
+    show-sql: false
+    properties:
+      "[hibernate.format_sql]": false
+      "[hibernate.dialect]": org.hibernate.dialect.PostgreSQLDialect

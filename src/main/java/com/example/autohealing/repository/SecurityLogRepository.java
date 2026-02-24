@@ -7,6 +7,10 @@ import org.springframework.stereotype.Repository;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * {@link SecurityLog} 엔티티에 접근하는 JPA Repository.
+ * 대시보드 통계 집계 산출 및 최근 로그 조회에 사용됩니다.
+ */
 @Repository
 public interface SecurityLogRepository extends JpaRepository<SecurityLog, Long> {
 

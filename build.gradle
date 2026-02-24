@@ -36,6 +36,7 @@ dependencies {
 	// 커스텀 @ConfigurationProperties 메타데이터 생성 (IDE 자동완성 + 경고 해소)
 	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
+	testImplementation 'com.h2database:h2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구

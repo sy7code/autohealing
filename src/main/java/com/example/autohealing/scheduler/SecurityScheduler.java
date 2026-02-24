@@ -6,6 +6,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+/**
+ * 정기적으로 보안 취약점을 검사하는 스케줄러.
+ *
+ * <p>
+ * 여기서는 5분마다 Azure Storage Account의 Public Access 설정 여부를
+ * 확인하고, 발견 즉시 비활성화하는 자동 치유 로직을 실행합니다.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor

@@ -1,23 +1,11 @@
 spring:
   application:
     name: autoHealing
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
   config:
     # .env 파일을 환경변수로 자동 로드합니다 (Spring Boot 2.4+)
     import: optional:file:.env[.properties]
-  datasource:
-    # .env 파일에 작성할 변수명과 일치시킵니다
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
-        dialect: org.hibernate.dialect.PostgreSQLDialect
 
 # ──────────────────────────────────────────────
 # Jira Cloud 연동 설정
@@ -28,6 +16,11 @@ jira:
   email: ${JIRA_EMAIL}                 # Jira 계정 이메일
   api-token: ${JIRA_API_TOKEN}         # Jira API Token
   project-key: ${JIRA_PROJECT_KEY}     # 프로젝트 키 (예: SCRUM)
+  transition:
+    in-progress: "In Progress"
+    done: "Done"
+  issue:
+    type: "Task"
 
 # ──────────────────────────────────────────────
 # Auto-Healing Feature Toggle
@@ -43,3 +36,20 @@ auto-healing:
 #   SNYK_API_TOKEN=snyk_xxxxxxxxxxxxx
 # Token 없으면 SnykClient가 Mock 데이터를 반환합니다.
 # ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# GitHub 및 Jira 상태 변이 설정 (하드코딩 제거 분리)
+# ──────────────────────────────────────────────
+github:
+  pr:
+    # PR 생성 시 타이틀 접두사 및 레이블 관련 설명
+    title-prefix: "[Auto-Healing]"
+    commit-prefix: "fix: "
+    commit-suffix: " by AI"
+    merge-message: "Merged by Auto-Healing System"
+
+# ──────────────────────────────────────────────
+# Discord Webhook 설정
+# ──────────────────────────────────────────────
+discord:
+  webhook-url: ${DISCORD_WEBHOOK_URL}

@@ -3,6 +3,7 @@ package com.example.autohealing.service;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import lombok.extern.slf4j.Slf4j;
 import org.kohsuke.github.*;
+import com.example.autohealing.config.GithubConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -10,8 +11,9 @@ import java.io.IOException;
 import java.util.List;
 
 /**
- * GitHub API SDK(org.kohsuke:github-api)와 연동해 Branch 생성 및 Pull Request를 요청하는
- * 서비스.
+ * GitHub API SDK (org.kohsuke:github-api)와 연동하여 레포지토리 제어,
+ * 브랜치 생성, 코드 커밋 및 Pull Request(PR) 관리를 수행하는 통합 서비스.
+ * AI가 생성한 패치 코드를 프로젝트에 제안하고 CI 결과를 검증하는 데 사용됩니다.
  */
 @Slf4j
 @Service
@@ -19,14 +21,17 @@ public class GithubService {
 
   private final String repoName;
   private final String baseBranch; // 기본값 "develop" 또는 "feature/ai-remediation-engine"
+  private final GithubConfig githubConfig;
   private GitHub github;
 
   public GithubService(
       @Value("${GITHUB_TOKEN:}") String githubToken,
       @Value("${GITHUB_REPO:}") String repoName,
-      @Value("${GITHUB_BASE_BRANCH:develop}") String baseBranch) {
+      @Value("${GITHUB_BASE_BRANCH:develop}") String baseBranch,
+      GithubConfig githubConfig) {
     this.repoName = repoName;
     this.baseBranch = baseBranch;
+    this.githubConfig = githubConfig;
     try {
       if (!githubToken.isBlank()) {
         this.github = new GitHubBuilder().withOAuthToken(githubToken).build();
@@ -36,6 +41,10 @@ public class GithubService {
     } catch (IOException e) {
       log.error("[GitHub] GitHub Client 초기화 에러", e);
     }
+  }
+
+  public String getRepoName() {
+    return this.repoName;
   }
 
   /**
@@ -87,7 +96,8 @@ public class GithubService {
       }
 
       // 4. Update or Create file with fixed code
-      String commitMessage = "fix: " + issue.getTitle() + " by AI";
+      String commitMessage = githubConfig.getPr().getCommitPrefix() + issue.getTitle()
+          + githubConfig.getPr().getCommitSuffix();
       if (currentFile != null) {
         currentFile.update(fixedCode, commitMessage, newBranchName);
       } else {
@@ -100,7 +110,7 @@ public class GithubService {
       }
 
       // 5. Create PR
-      String prTitle = "[Auto-Healing] " + issue.getTitle();
+      String prTitle = githubConfig.getPr().getTitlePrefix() + " " + issue.getTitle();
       String prBody = String.format("""
           ## 🤖 AI 자동 취약점 수정 (Auto-Healing)
 
@@ -195,7 +205,7 @@ public class GithubService {
       GHRepository repo = github.getRepository(repoName);
       GHPullRequest pr = repo.getPullRequest(prNumber);
 
-      pr.merge("Merged by Auto-Healing System", null, GHPullRequest.MergeMethod.SQUASH);
+      pr.merge(githubConfig.getPr().getMergeMessage(), null, GHPullRequest.MergeMethod.SQUASH);
       log.info("[GitHub API] PR #{} 머지 성공", prNumber);
 
       // 브랜치 삭제
