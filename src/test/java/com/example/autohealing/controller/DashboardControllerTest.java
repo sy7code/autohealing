@@ -11,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import com.example.autohealing.service.DiscordNotificationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
@@ -35,6 +36,9 @@ class DashboardControllerTest {
   @Mock
   private GithubService githubService;
 
+  @Mock
+  private DiscordNotificationService discordNotificationService;
+
   @InjectMocks
   private DashboardController dashboardController;
 
@@ -52,6 +56,7 @@ class DashboardControllerTest {
 
   @Test
   @DisplayName("PR 테스트가 성공(success)했을 때 승인 성공")
+  @SuppressWarnings("unchecked")
   void approveVulnerability_ciSuccess_mergesPr() {
     // given
     given(securityLogRepository.findById(1L)).willReturn(Optional.of(dummyLog));
@@ -86,7 +91,7 @@ class DashboardControllerTest {
     // then
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     assertThat(response.getBody()).isNotNull();
-    assertThat((String) response.getBody()).contains("단 아직 진행 중이거나 실패했습니다");
+    assertThat((String) response.getBody()).contains("CI 테스트가 아직 진행 중이거나 실패했습니다. 잠시 후 다시 시도해주세요.");
 
     verify(githubService).isPrTestsSuccessful(123);
     // 머지는 호출되지 않아야 함

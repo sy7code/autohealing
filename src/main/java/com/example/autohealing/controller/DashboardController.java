@@ -2,6 +2,7 @@ package com.example.autohealing.controller;
 
 import com.example.autohealing.entity.SecurityLog;
 import com.example.autohealing.repository.SecurityLogRepository;
+import com.example.autohealing.service.DiscordNotificationService;
 import com.example.autohealing.service.GithubService;
 import com.example.autohealing.service.JiraService;
 import lombok.RequiredArgsConstructor;
@@ -14,6 +15,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * 관리자 대시보드 및 취약점 검토 화면을 위한 REST API 컨트롤러.
+ * 프론트엔드(Next.js)에서 필요한 통계 데이터 및 개별 로그(SecurityLog) 내역을 제공하며,
+ * AI가 제안한 소스코드 수정안에 대한 최종 반영(승인) 처리 엔드포인트를 담당합니다.
+ */
 @Slf4j
 @RestController
 @RequestMapping("/api")
@@ -23,9 +29,14 @@ public class DashboardController {
   private final SecurityLogRepository securityLogRepository;
   private final GithubService githubService;
   private final JiraService jiraService;
+  private final DiscordNotificationService discordNotificationService;
 
   /**
-   * 전체 관리자 대시보드 리스트 반환 (최신순 100건 등)
+   * [GET] /api/dashboard/list
+   * 최근 감지된 취약점 로그를 최신순으로 반환합니다. (기본 100건 제한)
+   * 주로 대시보드 요약 테이블(Recent Vulnerabilities) 등에 사용됩니다.
+   *
+   * @return SecurityLog 리스트 (상태코드 200)
    */
   @GetMapping("/dashboard/list")
   public ResponseEntity<List<SecurityLog>> getList() {
@@ -34,7 +45,11 @@ public class DashboardController {
   }
 
   /**
-   * 전체 취약점 로그 목록을 반환합니다. (최신순)
+   * [GET] /api/vulnerabilities
+   * 전체 취약점 로그 목록을 프론트엔드 형식에 맞춘 DTO(SecurityLogDTO) 리스트로 변환하여 반환합니다.
+   * 프론트엔드 상세 페이지 라우팅 및 리스트 표출 시 활용됩니다.
+   *
+   * @return 변환된 SecurityLogDTO 리스트 (최신순 정렬, 상태코드 200)
    */
   @GetMapping("/vulnerabilities")
   public ResponseEntity<List<SecurityLogDTO>> getAllVulnerabilities() {
@@ -95,7 +110,11 @@ public class DashboardController {
   }
 
   /**
-   * 특정 취약점 로그 상세를 반환합니다.
+   * [GET] /api/vulnerabilities/{id}
+   * 특정 ID를 가진 취약점 로그의 상세 정보(원본 및 수정된 코드, 상세 설명 등)를 반환합니다.
+   *
+   * @param id 조회할 취약점 로그(SecurityLog)의 PK 식별자
+   * @return 취약점 로그 정보 (존재하지 않으면 404 반환)
    */
   @GetMapping("/vulnerabilities/{id}")
   public ResponseEntity<?> getVulnerabilityDetail(@PathVariable Long id) {
@@ -107,7 +126,11 @@ public class DashboardController {
   }
 
   /**
-   * 대시보드 통계 반환
+   * [GET] /api/dashboard/stats
+   * 대시보드 상단 요약 카드 및 심각도별 통계 차트를 그리기 위한 데이터를 집계하여 반환합니다.
+   * 통계 내용: 총 발견 건수, AI 수정 건수, 승인된 건수, 심각도(CRITICAL, HIGH, MEDIUM, LOW)별 개수
+   *
+   * @return 통계 지표가 담긴 Map 객체 (상태코드 200)
    */
   @GetMapping("/dashboard/stats")
   public ResponseEntity<Map<String, Object>> getStats() {
@@ -134,10 +157,16 @@ public class DashboardController {
   }
 
   /**
-   * 취약점 수정안을 승인합니다.
-   * 1) GitHub PR 머지
-   * 2) Jira 티켓 → Done
-   * 3) DB 승인 업데이트
+   * [POST] /api/vulnerabilities/approve/{id}
+   * 관리자가 AI 자동 수정안을 검토 후 승인(Approve)할 때 호출되는 엔드포인트입니다.
+   *
+   * 주요 처리 로직:
+   * 1. GitHub CI 검증 성공을 확인한 뒤 연동된 PR을 머지(Squash)
+   * 2. 연동된 Jira 티켓 상태를 'Done'으로 변경
+   * 3. DB 보안 로그 업데이트 (isApproved = true, status = APPROVED)
+   *
+   * @param id 승인할 취약점 로그의 PK 식별자
+   * @return 승인 결과 메시지 및 상태 정보 Map 반환 (실패 시 400 에러)
    */
   @PostMapping("/vulnerabilities/approve/{id}")
   public ResponseEntity<?> approveVulnerability(@PathVariable Long id) {
@@ -171,6 +200,11 @@ public class DashboardController {
 
       prMerged = githubService.mergePullRequest(prNumber);
       log.info("[Approval] PR 머지 결과 - prNumber={}, success={}", prNumber, prMerged);
+
+      if (prMerged) {
+        String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+        discordNotificationService.sendMergeSuccessAlert(logEntry.getThreatType(), prUrl);
+      }
     } else {
       log.info("[Approval] PR 번호가 없어 머지를 건너뜁니다. id={}", id);
     }

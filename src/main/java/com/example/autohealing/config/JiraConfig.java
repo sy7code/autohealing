@@ -32,6 +32,28 @@ public class JiraConfig {
   /** Jira 프로젝트 키 (예: SCRUM) */
   private String projectKey;
 
+  private Transition transition = new Transition();
+  private Issue issue = new Issue();
+
+  /**
+   * 워크플로우 상태 전이 관련 설정 (jira.transition.*)
+   */
+  @Getter
+  @Setter
+  public static class Transition {
+    private String inProgress = "In Progress";
+    private String done = "Done";
+  }
+
+  /**
+   * 기본 이슈 유형 관련 설정 (jira.issue.*)
+   */
+  @Getter
+  @Setter
+  public static class Issue {
+    private String type = "Task";
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // HTTP 클라이언트 빈
   // ───────────────────────────────────────────────────────────────────────────

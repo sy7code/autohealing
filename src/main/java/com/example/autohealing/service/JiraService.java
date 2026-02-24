@@ -22,7 +22,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Jira Cloud REST API SDK를 통해 이슈를 생성/수정하는 서비스.
+ * Jira Cloud REST API SDK를 사용하여 이슈(티켓) 생성, 수정, 상태 전환을 수행하는 통합 서비스.
+ * 초기 분석 티켓 생성 및 배포 후 'Done' 처리 등 보안 О케스트레이션 라이프사이클과 연동됩니다.
  */
 @Slf4j
 @Service
@@ -55,30 +56,49 @@ public class JiraService {
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
 
+  /**
+   * 지정된 요약과 설명으로 일반적인 티켓을 생성합니다. (우선순위 및 라벨 지정 없음)
+   *
+   * @param summary     이슈 요약(제목)
+   * @param description 이슈 상세 설명 (마크다운/해석 가능 텍스트)
+   * @return 생성된 이슈 Key (예: SCRUM-123)
+   */
   public String createIssue(String summary, String description) {
     return createIssue(summary, description, null, null);
   }
 
+  /**
+   * 세부 정보(위험도 및 라벨 포함)를 지정하여 Jira 이슈를 생성합니다.
+   *
+   * @param summary     이슈 요약(제목)
+   * @param description 이슈 마크다운 상세 설명
+   * @param severity    시스템 위험도 문자열 (현재는 설명용으로만 사용됨)
+   * @param labels      이슈에 부여할 라벨 리스트 (미지원/추후 확장용)
+   * @return 생성된 이슈 Key (예: SCRUM-123), 생성 실패 시 null 반환
+   */
   public String createIssue(String summary, String description, String severity, List<String> labels) {
-    if (jiraRestClient == null)
+    if (jiraRestClient == null) {
       return null;
+    }
 
     log.info("[Jira] 이슈 생성 시작 - mode={}, summary={}", healingMode, summary);
 
     try {
       Project project = jiraRestClient.getProjectClient().getProject(jiraConfig.getProjectKey()).claim();
-      IssueType taskType = null;
+      IssueType targetIssueType = null;
+      String configuredType = jiraConfig.getIssue().getType();
+
       for (IssueType t : project.getIssueTypes()) {
-        if (t.getName().equalsIgnoreCase("Task")) {
-          taskType = t;
+        if (t.getName().equalsIgnoreCase(configuredType)) {
+          targetIssueType = t;
           break;
         }
       }
-      if (taskType == null) {
-        taskType = project.getIssueTypes().iterator().next(); // Fallback
+      if (targetIssueType == null) {
+        targetIssueType = project.getIssueTypes().iterator().next(); // Fallback
       }
 
-      IssueInputBuilder builder = new IssueInputBuilder(project, taskType, summary);
+      IssueInputBuilder builder = new IssueInputBuilder(project, targetIssueType, summary);
       builder.setDescription(description);
 
       // Note: Atlassian SDK does not provide a robust way to add string labels
@@ -99,6 +119,14 @@ public class JiraService {
     }
   }
 
+  /**
+   * 이미 존재하는 이슈의 제목과 본문을 업데이트합니다.
+   *
+   * @param issueKey    대상 이슈 Key
+   * @param summary     새로운 요약
+   * @param description 새로운 설명
+   * @return 수정 성공 여부
+   */
   public boolean updateIssue(String issueKey, String summary, String description) {
     if (jiraRestClient == null)
       return false;
@@ -118,6 +146,14 @@ public class JiraService {
     }
   }
 
+  /**
+   * 지정된 타겟 이슈에 코멘트를 추가합니다.
+   * 컴파일 실패 등의 피드백 저장 용도로 사용됩니다.
+   *
+   * @param issueKey 대상 이슈 Key
+   * @param comment  추가할 코멘트 본문
+   * @return 추가 성공 여부
+   */
   public boolean addCommentToIssue(String issueKey, String comment) {
     if (jiraRestClient == null)
       return false;
@@ -136,10 +172,23 @@ public class JiraService {
     }
   }
 
+  /**
+   * 지정된 이슈를 'Done'(또는 설정된 완료 상태)으로 강제 전환합니다.
+   *
+   * @param issueKey 대상 이슈 Key
+   * @return 상태 전환 성공 여부
+   */
   public boolean transitionIssueToDone(String issueKey) {
-    return transitionIssue(issueKey, "Done");
+    return transitionIssue(issueKey, jiraConfig.getTransition().getDone());
   }
 
+  /**
+   * 이슈의 워크플로우 상태를 주어진 전환 이름(transitionName)으로 변경합니다.
+   *
+   * @param issueKey       대상 이슈 Key
+   * @param transitionName 목표 상태 전환 이름 (예: In Progress, Done)
+   * @return 상태 전환 성공 여부
+   */
   public boolean transitionIssue(String issueKey, String transitionName) {
     if (jiraRestClient == null)
       return false;
@@ -150,10 +199,12 @@ public class JiraService {
       Iterable<Transition> transitions = jiraRestClient.getIssueClient().getTransitions(issue).claim();
 
       Transition targetTransition = null;
+      String doneStateName = jiraConfig.getTransition().getDone();
+
       for (Transition t : transitions) {
         String name = t.getName();
         if (name.equalsIgnoreCase(transitionName) ||
-            (transitionName.equalsIgnoreCase("Done")
+            (transitionName.equalsIgnoreCase(doneStateName)
                 && (name.toLowerCase().contains("done") || name.toLowerCase().contains("완료")))) {
           targetTransition = t;
           break;

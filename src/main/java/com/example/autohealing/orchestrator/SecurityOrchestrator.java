@@ -8,9 +8,9 @@ import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import com.example.autohealing.service.JiraService;
 import com.example.autohealing.service.CodeValidatorService;
-import com.example.autohealing.entity.SecurityLog;
-import com.example.autohealing.repository.SecurityLogRepository;
+import com.example.autohealing.service.DiscordNotificationService;
 import com.example.autohealing.service.GithubService;
+import com.example.autohealing.config.JiraConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,6 +49,8 @@ public class SecurityOrchestrator {
   private final GithubService githubService;
   private final CodeValidatorService codeValidatorService;
   private final SecurityLogRepository securityLogRepository;
+  private final JiraConfig jiraConfig;
+  private final DiscordNotificationService discordNotificationService;
 
   @Value("${LOCAL_REPO_PATH:}")
   private String localRepoPath;
@@ -60,6 +62,19 @@ public class SecurityOrchestrator {
   // Step 1: 즉시 응답용 "분석 중" 티켓 생성 (동기)
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Step 1: 즉시 응답용 "분석 중" 티켓 생성 (동기)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * GitHub Webhook 수신 직후 보안 분석이 시작되었음을 알리는 Jira 티켓을 생성합니다.
+   * 이 작업은 동기적으로 처리되어 웹훅에 빠르게 응답(202 Accepted)할 수 있도록 합니다.
+   *
+   * @param repoName  분석 대상 저장소 이름
+   * @param commitId  스캔 대상 커밋 ID
+   * @param committer 커밋 작성자
+   * @return 생성된 Jira 티켓의 Key (예: SCRUM-42)
+   */
   public String startAnalysis(String repoName, String commitId, String committer) {
     log.info("[Orchestrator] 보안 분석 시작 - repo={}, commit={}", repoName, commitId);
 
@@ -84,6 +99,18 @@ public class SecurityOrchestrator {
   // Step 2: 비동기 Snyk CLI 스캔 + AI 수정 + Jira 업데이트
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Step 2: 비동기 Snyk CLI 스캔 + AI 수정 + Jira 업데이트
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * 백그라운드에서 Snyk CLI를 통해 코드를 스캔하고, 위험도가 높은 취약점에 대해 AI 수정을 시도합니다.
+   * 처리 후 기존에 생성된 "분석 중" Jira 티켓을 최종 결과로 업데이트합니다.
+   *
+   * @param issueKey 단계 1에서 생성된 Jira 티켓 Key
+   * @param repoName 저장소 이름 (티켓 업데이트 시 사용)
+   * @param scanPath 스캔할 로컬 디렉토리 경로 (null인 경우 전역 환경변수 LOCAL_REPO_PATH 사용)
+   */
   @Async("securityTaskExecutor")
   public void runSnykScanAndUpdate(String issueKey, String repoName, String scanPath) {
     log.info("[Orchestrator][Async] Step2 시작 - issueKey={}, repo={}, aiEngine={}",
@@ -123,6 +150,19 @@ public class SecurityOrchestrator {
   // Private – AI 수정 + 컴파일 검증
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private – AI 수정 + 컴파일 검증
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Snyk 스캔 결과 중 CRITICAL 및 HIGH 등급의 취약점만 필터링하여 AI 기반 자동 수정을 시도합니다.
+   * 수정된 코드는 컴파일 검증을 거치며, 개별 취약점마다 상세 Jira 티켓과 (성공 시) GitHub PR을 생성합니다.
+   *
+   * @param issueKey 원본 "분석 중" Jira 티켓 Key (컴파일 오류 등 코멘트 등록용)
+   * @param repoName 대상 저장소
+   * @param issues   Snyk 스캔으로 발견된 취약점 목록
+   * @return AI가 성공적으로 수정 및 컴파일 검증까지 마친 취약점들의 Snyk ID Set
+   */
   private java.util.Set<String> applyAiRemediation(String issueKey, String repoName, List<UnifiedIssue> issues) {
     java.util.Set<String> fixedIds = new java.util.HashSet<>();
 
@@ -230,6 +270,14 @@ public class SecurityOrchestrator {
 
       log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), jiraKey);
 
+      // Discord Alert: Snyk Vulnerability Detected
+      if (jiraKey != null && issue.getSeverity() != null) {
+        discordNotificationService.sendSnykAlert(
+            issue.getTitle(),
+            issue.getSeverity().name(),
+            jiraConfig.getHost() + "/browse/" + jiraKey);
+      }
+
       // Jira Key 업데이트
       if (jiraKey != null) {
         securityLog.setJiraKey(jiraKey);
@@ -238,24 +286,42 @@ public class SecurityOrchestrator {
 
       // 2. AI 수정 성공 + 컴파일 통과 시 PR에 Jira Key 넘겨주기 및 In Progress 전환
       if (isAiFixed && jiraKey != null) {
-        jiraService.transitionIssue(jiraKey, "In Progress");
+        jiraService.transitionIssue(jiraKey, jiraConfig.getTransition().getInProgress());
         Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode,
             explanation + "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey);
         if (prNumber != null) {
           securityLog.setPrNumber(prNumber);
           securityLogRepository.save(securityLog);
+
+          String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+          discordNotificationService.sendPrCreatedAlert(
+              "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
+              prUrl,
+              dashboardDetailUrl);
         }
       } else if (isAiFixed) {
         Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
         if (prNumber != null) {
           securityLog.setPrNumber(prNumber);
           securityLogRepository.save(securityLog);
+
+          String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+          discordNotificationService.sendPrCreatedAlert(
+              "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
+              prUrl,
+              dashboardDetailUrl);
         }
       }
     }
     return fixedIds;
   }
 
+  /**
+   * 취약점 정보(description)에서 파일 경로를 추출해 로컬 디스크에서 원본 소스코드를 읽어옵니다.
+   *
+   * @param issue 취약점 DTO
+   * @return 파일의 원본 내용, 또는 오류 발생 시 에러 메시지(주석 형태)
+   */
   private String readSourceFile(UnifiedIssue issue) {
     if (localRepoPath == null || localRepoPath.isBlank()) {
       return "// LOCAL_REPO_PATH 미설정\n" + issue.getDescription();
@@ -338,6 +404,6 @@ public class SecurityOrchestrator {
    */
   public boolean completeJiraTicket(String jiraKey) {
     log.info("[Orchestrator] PR Merge 감지 - Jira 티켓 완료 처리: {}", jiraKey);
-    return jiraService.transitionIssue(jiraKey, "Done");
+    return jiraService.transitionIssue(jiraKey, jiraConfig.getTransition().getDone());
   }
 }
