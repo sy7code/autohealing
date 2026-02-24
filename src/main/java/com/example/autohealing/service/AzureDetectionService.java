@@ -14,8 +14,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class AzureDetectionService {
 
-  @Value("${AZURE_SUBSCRIPTION_ID}")
+  @Value("${azure.subscription-id}")
   private String subscriptionId;
+
+  @Value("${azure.storage-account:autohealing2026}")
+  private String resourceName;
 
   private final SecurityLogRepository securityLogRepository;
 
@@ -34,7 +37,6 @@ public class AzureDetectionService {
           .withSubscription(subscriptionId);
 
       // 2. 저장소 계정 찾기
-      String resourceName = "autohealing2026";
       StorageAccount storageAccount = azure.storageAccounts().list().stream()
           .filter(sa -> resourceName.equals(sa.name()))
           .findFirst()
