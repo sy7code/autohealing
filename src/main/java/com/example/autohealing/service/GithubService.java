@@ -2,36 +2,40 @@ package com.example.autohealing.service;
 
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import lombok.extern.slf4j.Slf4j;
+import org.kohsuke.github.*;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.Map;
+import java.io.IOException;
+import java.util.List;
 
 /**
- * GitHub REST API 와 연동해 Branch 생성 및 Pull Request를 요청하는 서비스.
+ * GitHub API SDK(org.kohsuke:github-api)와 연동해 Branch 생성 및 Pull Request를 요청하는
+ * 서비스.
  */
 @Slf4j
 @Service
 public class GithubService {
 
-  private final WebClient webClient;
-  private final String githubToken;
   private final String repoName;
-  private final String baseBranch; // 기본값 "feature/ai-remediation-engine"
+  private final String baseBranch; // 기본값 "develop" 또는 "feature/ai-remediation-engine"
+  private GitHub github;
 
   public GithubService(
       @Value("${GITHUB_TOKEN:}") String githubToken,
       @Value("${GITHUB_REPO:}") String repoName,
-      @Value("${GITHUB_BASE_BRANCH:feature/ai-remediation-engine}") String baseBranch) {
-    this.webClient = WebClient.create("https://api.github.com");
-    this.githubToken = githubToken;
+      @Value("${GITHUB_BASE_BRANCH:develop}") String baseBranch) {
     this.repoName = repoName;
     this.baseBranch = baseBranch;
+    try {
+      if (!githubToken.isBlank()) {
+        this.github = new GitHubBuilder().withOAuthToken(githubToken).build();
+      } else {
+        log.warn("[GitHub] GITHUB_TOKEN이 설정되지 않았습니다.");
+      }
+    } catch (IOException e) {
+      log.error("[GitHub] GitHub Client 초기화 에러", e);
+    }
   }
 
   /**
@@ -41,48 +45,59 @@ public class GithubService {
    * @param originalCode 원본 소스코드
    * @param fixedCode    수정된 소스코드
    * @param explanation  AI가 작성한 원인 및 수정 내역 (한국어 설명)
+   * @return 생성된 PR 번호 (실패 시 null)
    */
-  public void createPullRequest(UnifiedIssue issue, String originalCode, String fixedCode, String explanation) {
-    if (githubToken.isBlank() || repoName.isBlank()) {
+  public Integer createPullRequest(UnifiedIssue issue, String originalCode, String fixedCode, String explanation) {
+    if (github == null || repoName.isBlank()) {
       log.warn("[GitHub] 인증 토큰 또는 저장소 정보가 설정되지 않아 PR 생성을 건너뜁니다.");
-      return;
+      return null;
     }
 
     String filePath = extractFilePath(issue.getDescription());
     if (filePath == null) {
       log.warn("[GitHub] 티켓 내용에서 파일 경로를 추출할 수 없어 PR 생성을 건너뜁니다. ID={}", issue.getId());
-      return;
+      return null;
     }
 
     String safeIssueId = issue.getId().replaceAll("[^a-zA-Z0-9-]", "-");
-    String newBranchName = "auto-fix-" + safeIssueId;
+    String newBranchName = "fix/auto-fix-" + safeIssueId;
 
     log.info("[GitHub] PR 생성 프로세스 시작 - branch={}, file={}", newBranchName, filePath);
 
     try {
+      GHRepository repo = github.getRepository(repoName);
+
       // 1. Get base branch SHA
-      String baseSha = getBranchSha(baseBranch);
-      if (baseSha == null) {
-        log.error("[GitHub] Base 브랜치({})의 SHA를 찾을 수 없습니다.", baseBranch);
-        return;
-      }
+      GHBranch base = repo.getBranch(baseBranch);
+      String baseSha = base.getSHA1();
 
       // 2. Create new branch
-      boolean branchCreated = createBranch(newBranchName, baseSha);
-      if (!branchCreated) {
-        log.error("[GitHub] 새 브랜치({}) 생성 실패", newBranchName);
-        return;
+      try {
+        repo.createRef("refs/heads/" + newBranchName, baseSha);
+      } catch (HttpException e) {
+        log.warn("[GitHub API] 브랜치 생성 실패 (이미 존재할 수도 있음): {}", e.getMessage());
       }
 
-      // 3. Get existing file SHA (to update)
-      String fileSha = getFileSha(newBranchName, filePath);
-      if (fileSha == null) {
-        log.error("[GitHub] 대상 파일({}) 조회 실패", filePath);
-        return;
+      // 3. Get existing file (to update)
+      GHContent currentFile = null;
+      try {
+        currentFile = repo.getFileContent(filePath, newBranchName);
+      } catch (IOException e) {
+        log.warn("[GitHub API] 대상 파일({})을 찾을 수 없습니다. (새 파일로 생성 시도)", filePath);
       }
 
-      // 4. Update file with fixed code
-      updateFile(newBranchName, filePath, fileSha, fixedCode, "fix: " + issue.getTitle() + " by AI");
+      // 4. Update or Create file with fixed code
+      String commitMessage = "fix: " + issue.getTitle() + " by AI";
+      if (currentFile != null) {
+        currentFile.update(fixedCode, commitMessage, newBranchName);
+      } else {
+        repo.createContent()
+            .path(filePath)
+            .content(fixedCode)
+            .message(commitMessage)
+            .branch(newBranchName)
+            .commit();
+      }
 
       // 5. Create PR
       String prTitle = "[Auto-Healing] " + issue.getTitle();
@@ -102,117 +117,100 @@ public class GithubService {
           자세한 이력과 원본 내역은 연동된 Jira 티켓을 확인해 주세요.
           """, issue.getId(), filePath, explanation);
 
-      createPr(newBranchName, baseBranch, prTitle, prBody);
+      GHPullRequest pr = repo.createPullRequest(prTitle, newBranchName, baseBranch, prBody);
+      log.info("[GitHub API] PR 생성 완료! - url: {}", pr.getHtmlUrl());
 
-      log.info("[GitHub] PR 생성 완료!");
+      return pr.getNumber();
 
     } catch (Exception e) {
-      log.error("[GitHub] PR 생성 과정 중 예외 발생", e);
+      log.error("[GitHub API] PR 생성 과정 중 예외 발생", e);
+      return null;
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Private - GitHub API Helpers
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private String getBranchSha(String branchName) {
-    try {
-      Map<?, ?> response = webClient.get()
-          .uri("/repos/" + repoName + "/git/ref/heads/" + branchName)
-          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
-          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
-          .retrieve()
-          .bodyToMono(Map.class)
-          .block();
-
-      if (response != null && response.containsKey("object")) {
-        return (String) ((Map<?, ?>) response.get("object")).get("sha");
-      }
-    } catch (Exception e) {
-      log.error("[GitHub API] 브랜치 SHA 조회 중 오류", e);
-    }
-    return null;
-  }
-
-  private boolean createBranch(String branchName, String sha) {
-    try {
-      webClient.post()
-          .uri("/repos/" + repoName + "/git/refs")
-          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
-          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
-          .contentType(MediaType.APPLICATION_JSON)
-          .bodyValue(Map.of(
-              "ref", "refs/heads/" + branchName,
-              "sha", sha))
-          .retrieve()
-          .bodyToMono(Void.class)
-          .block();
+  /**
+   * PR 의 Check Runs(또는 Status)를 조회하여 빌드/테스트 성공 여부를 확인합니다.
+   *
+   * @param prNumber PR 번호
+   * @return 모두 성공(success)이면 true, 아니면 false
+   */
+  public boolean isPrTestsSuccessful(int prNumber) {
+    if (github == null || repoName.isBlank()) {
+      log.warn("[GitHub] 인증 토큰이나 저장소가 설정되지 않아 CI 검증을 무조건 통과처리 합니다.");
       return true;
-    } catch (Exception e) {
-      // 브랜치가 이미 존재하는 경우 등
-      log.warn("[GitHub API] 브랜치 생성 실패 (이미 존재할 수도 있음): {}", e.getMessage());
+    }
+    try {
+      GHRepository repo = github.getRepository(repoName);
+      GHPullRequest pr = repo.getPullRequest(prNumber);
+      String headSha = pr.getHead().getSha();
+
+      // Check Runs API 확인
+      PagedIterable<GHCheckRun> checkRuns = repo.getCommit(headSha).getCheckRuns();
+      List<GHCheckRun> runList = checkRuns.toList();
+
+      if (runList.isEmpty()) {
+        log.info("[GitHub API] PR #{}에 등록된 Check Run이 없습니다. (CI 통과 간주)", prNumber);
+        return true;
+      }
+
+      boolean allSuccess = true;
+      for (GHCheckRun run : runList) {
+        GHCheckRun.Status status = run.getStatus();
+        GHCheckRun.Conclusion conclusion = run.getConclusion();
+
+        log.info("[GitHub API] PR #{} Check Run '{}' 상태: status={}, conclusion={}",
+            prNumber, run.getName(), status, conclusion);
+
+        if (status != GHCheckRun.Status.COMPLETED) {
+          log.warn("[GitHub API] PR #{} 검증 진행 중... ({})", prNumber, run.getName());
+          allSuccess = false;
+        } else if (conclusion != GHCheckRun.Conclusion.SUCCESS && conclusion != GHCheckRun.Conclusion.SKIPPED
+            && conclusion != GHCheckRun.Conclusion.NEUTRAL) {
+          log.warn("[GitHub API] PR #{} 검증 실패! ({}: conclusion={})", prNumber, run.getName(), conclusion);
+          allSuccess = false;
+        }
+      }
+
+      return allSuccess;
+
+    } catch (IOException e) {
+      log.error("[GitHub API] PR #{} 상태 확인 중 오류 발생", prNumber, e);
       return false;
     }
   }
 
-  private String getFileSha(String branchName, String filePath) {
-    try {
-      Map<?, ?> response = webClient.get()
-          .uri("/repos/" + repoName + "/contents/" + filePath + "?ref=" + branchName)
-          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
-          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
-          .retrieve()
-          .bodyToMono(Map.class)
-          .block();
-
-      if (response != null && response.containsKey("sha")) {
-        return (String) response.get("sha");
-      }
-    } catch (Exception e) {
-      log.error("[GitHub API] 파일 SHA 조회 오류: path={}", filePath, e);
+  /**
+   * PR 번호로 Pull Request를 머지하고 브랜치를 삭제합니다.
+   *
+   * @param prNumber PR 번호
+   * @return 머지 성공 여부
+   */
+  public boolean mergePullRequest(int prNumber) {
+    if (github == null || repoName.isBlank()) {
+      log.warn("[GitHub] 인증 토큰 또는 저장소 정보가 없어 머지를 건너뜁니다.");
+      return false;
     }
-    return null;
-  }
 
-  private void updateFile(String branchName, String filePath, String sha, String content, String message) {
-    String base64Content = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
-
-    webClient.put()
-        .uri("/repos/" + repoName + "/contents/" + filePath)
-        .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
-        .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
-        .contentType(MediaType.APPLICATION_JSON)
-        .bodyValue(Map.of(
-            "message", message,
-            "content", base64Content,
-            "sha", sha,
-            "branch", branchName))
-        .retrieve()
-        .bodyToMono(Void.class)
-        .block();
-  }
-
-  private void createPr(String headBranch, String baseBranch, String title, String body) {
     try {
-      Map<?, ?> response = webClient.post()
-          .uri("/repos/" + repoName + "/pulls")
-          .header(HttpHeaders.AUTHORIZATION, "Bearer " + githubToken)
-          .header(HttpHeaders.ACCEPT, "application/vnd.github.v3+json")
-          .contentType(MediaType.APPLICATION_JSON)
-          .bodyValue(Map.of(
-              "title", title,
-              "body", body,
-              "head", headBranch,
-              "base", baseBranch))
-          .retrieve()
-          .bodyToMono(Map.class)
-          .block();
+      GHRepository repo = github.getRepository(repoName);
+      GHPullRequest pr = repo.getPullRequest(prNumber);
 
-      if (response != null && response.containsKey("html_url")) {
-        log.info("[GitHub API] PR 생성 성공: {}", response.get("html_url"));
+      pr.merge("Merged by Auto-Healing System", null, GHPullRequest.MergeMethod.SQUASH);
+      log.info("[GitHub API] PR #{} 머지 성공", prNumber);
+
+      // 브랜치 삭제
+      String headRef = pr.getHead().getRef();
+      GHBranch headBranch = repo.getBranch(headRef);
+      if (headBranch != null && headRef.startsWith("fix/")) {
+        GHRef ref = repo.getRef("heads/" + headRef);
+        ref.delete();
+        log.info("[GitHub API] 브랜치 {} 삭제 완료", headRef);
       }
-    } catch (Exception e) {
-      log.error("[GitHub API] PR 생성 오류", e);
+
+      return true;
+    } catch (IOException e) {
+      log.error("[GitHub API] PR #{} 머지 또는 브랜치 삭제 실패", prNumber, e);
+      return false;
     }
   }
 
@@ -223,20 +221,14 @@ public class GithubService {
       if (line.toLowerCase().startsWith("패키지 경로") || line.toLowerCase().startsWith("file")) {
         String[] parts = line.split(":", 2);
         if (parts.length == 2) {
-          // SnykCLI 출력: "com.example.package → my-file.jar" 등 일 수도 있으나,
-          // 자바 파일 경로가 포함될 경우 정리 (우선은 Snyk CLI 출력에 실제 물리적 경로 정보가 완벽하지 않음)
           String path = parts[1].trim();
-          // Snyk CLI 스캐너 상 "패키지 경로"가 pom.xml이나 build.gradle 같은 모듈을 가리킬 수 있음.
-          // 하드코딩된 예제 파일 경로로 fallback 등 필요 가능
           if (path.contains("→") || path.contains("@")) {
-            // Snyk 의존성 경로인 경우, 패치할 파일은 기본적으로 build.gradle.kts 또는 pom.xml 일 확률이 높음.
-            // 우선 간단하게 build.gradle 로 가정
             return "build.gradle";
           }
           return path;
         }
       }
     }
-    return "build.gradle"; // default fallback for dependencies
+    return "build.gradle";
   }
 }

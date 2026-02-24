@@ -6,4 +6,8 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public interface SecurityLogRepository extends JpaRepository<SecurityLog, Long> {
+
+  long countByIsApprovedTrue();
+
+  long countBySeverityIgnoreCase(String severity);
 }
