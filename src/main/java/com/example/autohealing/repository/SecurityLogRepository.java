@@ -17,7 +17,7 @@ public interface SecurityLogRepository extends JpaRepository<SecurityLog, Long> 
   long countByAiFixedTrue();
 
   /** 관리자 승인 건수 */
-  long countByApprovedTrue();
+  long countByIsApprovedTrue();
 
   /** CRITICAL 건수 */
   long countBySeverityIgnoreCase(String severity);

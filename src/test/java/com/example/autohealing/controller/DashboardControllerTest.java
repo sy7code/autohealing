@@ -59,13 +59,15 @@ class DashboardControllerTest {
     given(githubService.mergePullRequest(123)).willReturn(true);
 
     // when
-    ResponseEntity<Map<String, Object>> response = dashboardController.approveVulnerability(1L);
+    // when
+    ResponseEntity<?> response = dashboardController.approveVulnerability(1L);
 
     // then
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     assertThat(response.getBody()).isNotNull();
-    assertThat(response.getBody().get("approved")).isEqualTo(true);
-    assertThat(response.getBody().get("prMerged")).isEqualTo(true);
+    Map<String, Object> body = (Map<String, Object>) response.getBody();
+    assertThat(body.get("approved")).isEqualTo(true);
+    assertThat(body.get("prMerged")).isEqualTo(true);
 
     verify(githubService).isPrTestsSuccessful(123);
     verify(githubService).mergePullRequest(123);
@@ -79,12 +81,12 @@ class DashboardControllerTest {
     given(githubService.isPrTestsSuccessful(123)).willReturn(false);
 
     // when
-    ResponseEntity<Map<String, Object>> response = dashboardController.approveVulnerability(1L);
+    ResponseEntity<?> response = dashboardController.approveVulnerability(1L);
 
     // then
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     assertThat(response.getBody()).isNotNull();
-    assertThat(response.getBody().get("error")).isEqualTo("아직 테스트가 완료되지 않았습니다");
+    assertThat((String) response.getBody()).contains("단 아직 진행 중이거나 실패했습니다");
 
     verify(githubService).isPrTestsSuccessful(123);
     // 머지는 호출되지 않아야 함

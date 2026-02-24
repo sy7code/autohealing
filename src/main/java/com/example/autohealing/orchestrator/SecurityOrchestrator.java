@@ -3,6 +3,8 @@ package com.example.autohealing.orchestrator;
 import com.example.autohealing.ai.AiRemediationService;
 import com.example.autohealing.ai.AiRemediationResult;
 import com.example.autohealing.client.SnykCliScannerService;
+import com.example.autohealing.entity.SecurityLog;
+import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import com.example.autohealing.service.JiraService;
 import com.example.autohealing.service.CodeValidatorService;
@@ -51,7 +53,7 @@ public class SecurityOrchestrator {
   @Value("${LOCAL_REPO_PATH:}")
   private String localRepoPath;
 
-  @Value("${VERCEL_FRONTEND_URL:http://localhost:3000}")
+  @Value("${VERCEL_URL:http://localhost:3000}")
   private String vercelUrl;
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -99,7 +101,7 @@ public class SecurityOrchestrator {
       }
 
       // B. CRITICAL/HIGH → AI 자동 수정 + 컴파일 검증
-      java.util.Set<String> aiFixedIds = applyAiRemediation(issueKey, issues);
+      java.util.Set<String> aiFixedIds = applyAiRemediation(issueKey, repoName, issues);
 
       // C. Jira 최종 업데이트
       updateWithVulnerabilities(issueKey, repoName, issues, aiFixedIds);
@@ -121,7 +123,7 @@ public class SecurityOrchestrator {
   // Private – AI 수정 + 컴파일 검증
   // ─────────────────────────────────────────────────────────────────────────
 
-  private java.util.Set<String> applyAiRemediation(String issueKey, List<UnifiedIssue> issues) {
+  private java.util.Set<String> applyAiRemediation(String issueKey, String repoName, List<UnifiedIssue> issues) {
     java.util.Set<String> fixedIds = new java.util.HashSet<>();
 
     List<UnifiedIssue> targets = issues.stream()
@@ -177,14 +179,21 @@ public class SecurityOrchestrator {
         explanation = "AI 자동 수정 중 오류 발생: " + e.getMessage();
       }
 
-      // 0. DB에 SecurityLog 저장
-      SecurityLog logEntry = new SecurityLog(
-          issue.getTitle(), issue.getTitle(), issue.getSeverity().name(), isAiFixed ? "AI_FIXED" : "DETECTED");
-      logEntry.setSnykId(issue.getId());
-      logEntry.setAiFixed(isAiFixed);
-      logEntry.setFixExplanation(explanation);
-      logEntry = securityLogRepository.save(logEntry);
-      log.info("[Orchestrator] DB 저장 완료 - dbId={}, snykId={}", logEntry.getId(), issue.getId());
+      // 0. DB에 SecurityLog 먼저 저장하여 ID 발급받기
+      SecurityLog securityLog = new SecurityLog(
+          repoName,
+          issue.getTitle(),
+          issue.getSeverity().name(),
+          isAiFixed ? "AI 패치 대기중" : "수동 리뷰 필요");
+      securityLog.setSnykId(issue.getId());
+      securityLog.setAiFixed(isAiFixed);
+      securityLog.setOriginalCode(originalCode);
+      securityLog.setPatchedCode(fixedCode);
+      securityLog.setFixExplanation(explanation);
+      securityLog = securityLogRepository.save(securityLog);
+      log.info("[Orchestrator] DB 저장 완료 - dbId={}, snykId={}", securityLog.getId(), issue.getId());
+
+      String dashboardDetailUrl = vercelUrl + "/detail/" + securityLog.getId();
 
       // 1. 개별 Jira 티켓 생성
       java.util.List<String> labels = new java.util.ArrayList<>();
@@ -194,8 +203,6 @@ public class SecurityOrchestrator {
         labels.add("Security-Patch");
       }
 
-      String detailLink = vercelUrl + "/detail/" + logEntry.getId();
-
       String markdownDesc = String.format("""
           | 특성 | 세부 정보 |
           | :--- | :--- |
@@ -203,7 +210,7 @@ public class SecurityOrchestrator {
           | **위험도**   | %s |
           | **패키지 경로**| %s |
           | **AI 자동수정**| %s |
-          | **대시보드 상세** | [상세 페이지 보기](%s) |
+          | **대시보드 링크**| [Vercel 상세보기 바로가기](%s) |
 
           ### 💡 상세 내용
           %s
@@ -214,28 +221,36 @@ public class SecurityOrchestrator {
           issue.getSeverity().name(),
           extractFilePath(issue.getDescription()),
           isAiFixed ? "✅ 예 (Github PR 생성됨)" : "❌ 아니오",
-          detailLink,
+          dashboardDetailUrl,
           issue.getDescription(),
           isAiFixed ? ("=== AI 자동 수정 내용 요약 ===\n" + explanation) : "");
 
       String jiraKey = jiraService.createIssue(
           issue.getTitle(), markdownDesc, issue.getSeverity().name(), labels);
 
-      // DB에 Jira Key 업데이트
-      if (jiraKey != null) {
-        logEntry.setJiraKey(jiraKey);
-        securityLogRepository.save(logEntry);
-      }
-
       log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), jiraKey);
+
+      // Jira Key 업데이트
+      if (jiraKey != null) {
+        securityLog.setJiraKey(jiraKey);
+        securityLogRepository.save(securityLog);
+      }
 
       // 2. AI 수정 성공 + 컴파일 통과 시 PR에 Jira Key 넘겨주기 및 In Progress 전환
       if (isAiFixed && jiraKey != null) {
         jiraService.transitionIssue(jiraKey, "In Progress");
-        githubService.createPullRequest(issue, originalCode, fixedCode,
+        Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode,
             explanation + "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey);
+        if (prNumber != null) {
+          securityLog.setPrNumber(prNumber);
+          securityLogRepository.save(securityLog);
+        }
       } else if (isAiFixed) {
-        githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+        Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+        if (prNumber != null) {
+          securityLog.setPrNumber(prNumber);
+          securityLogRepository.save(securityLog);
+        }
       }
     }
     return fixedIds;

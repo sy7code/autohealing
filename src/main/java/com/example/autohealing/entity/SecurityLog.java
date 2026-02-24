@@ -50,11 +50,22 @@ public class SecurityLog {
   @Column(nullable = false)
   private boolean aiFixed = false;
 
-  /** 관리자 승인 여부 */
-  @Column(nullable = false)
-  private boolean approved = false;
+  /** 승인 여부 */
+  @Column(nullable = false, columnDefinition = "boolean default false", name = "is_approved")
+  private boolean isApproved = false;
 
-  /** AI가 생성한 수정 코드 설명 */
+  /** 패치 적용 완료 시간 */
+  private LocalDateTime resolvedAt;
+
+  /** 원본 소스코드 (Diff 뷰어용) */
+  @Column(columnDefinition = "TEXT")
+  private String originalCode;
+
+  /** 수정된 소스코드 (Diff 뷰어용) */
+  @Column(columnDefinition = "TEXT")
+  private String patchedCode;
+
+  /** 리뷰용 AI 자동 수정 요약 사유 */
   @Column(columnDefinition = "TEXT")
   private String fixExplanation;
 

@@ -22,17 +22,20 @@ configurations {
 
 repositories {
 	mavenCentral()
+	maven {
+		url "https://packages.atlassian.com/maven-public"
+	}
 }
 
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-webflux'
 	compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
 	// 커스텀 @ConfigurationProperties 메타데이터 생성 (IDE 자동완성 + 경고 해소)
 	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-webflux-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구
@@ -42,8 +45,19 @@ dependencies {
 	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
 	runtimeOnly 'org.postgresql:postgresql'
 
+	// 2. GitHub REST API Client (https://github-api.kohsuke.org/)
+	implementation 'org.kohsuke:github-api:1.330'
+
+	// 3. Jira Cloud REST API Client
+	implementation 'com.atlassian.jira:jira-rest-java-client-core:5.2.2'
+	implementation 'io.atlassian.fugue:fugue:4.7.2'
 
 }
+
+tasks.named('bootJar') {
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 
 tasks.named('test') {
 	useJUnitPlatform()
