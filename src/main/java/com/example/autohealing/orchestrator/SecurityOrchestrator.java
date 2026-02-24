@@ -8,6 +8,8 @@ import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import com.example.autohealing.service.JiraService;
 import com.example.autohealing.service.CodeValidatorService;
+import com.example.autohealing.entity.SecurityLog;
+import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.service.GithubService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -183,15 +185,19 @@ public class SecurityOrchestrator {
           issue.getTitle(),
           issue.getSeverity().name(),
           isAiFixed ? "AI 패치 대기중" : "수동 리뷰 필요");
+      securityLog.setSnykId(issue.getId());
+      securityLog.setAiFixed(isAiFixed);
       securityLog.setOriginalCode(originalCode);
       securityLog.setPatchedCode(fixedCode);
       securityLog.setFixExplanation(explanation);
       securityLog = securityLogRepository.save(securityLog);
+      log.info("[Orchestrator] DB 저장 완료 - dbId={}, snykId={}", securityLog.getId(), issue.getId());
 
       String dashboardDetailUrl = vercelUrl + "/detail/" + securityLog.getId();
 
       // 1. 개별 Jira 티켓 생성
       java.util.List<String> labels = new java.util.ArrayList<>();
+      labels.add("Auto-Fix");
       if (isAiFixed) {
         labels.add("AI-Fixed");
         labels.add("Security-Patch");

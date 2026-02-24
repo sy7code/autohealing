@@ -136,8 +136,8 @@ public class JiraService {
     }
   }
 
-  public void transitionIssueToDone(String issueKey) {
-    transitionIssue(issueKey, "Done");
+  public boolean transitionIssueToDone(String issueKey) {
+    return transitionIssue(issueKey, "Done");
   }
 
   public boolean transitionIssue(String issueKey, String transitionName) {

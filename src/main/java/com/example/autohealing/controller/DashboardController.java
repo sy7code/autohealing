@@ -25,6 +25,15 @@ public class DashboardController {
   private final JiraService jiraService;
 
   /**
+   * 전체 관리자 대시보드 리스트 반환 (최신순 100건 등)
+   */
+  @GetMapping("/dashboard/list")
+  public ResponseEntity<List<SecurityLog>> getList() {
+    List<SecurityLog> logs = securityLogRepository.findTop100ByOrderByDetectedAtDesc();
+    return ResponseEntity.ok(logs);
+  }
+
+  /**
    * 전체 취약점 로그 목록을 반환합니다. (최신순)
    */
   @GetMapping("/vulnerabilities")
@@ -98,80 +107,100 @@ public class DashboardController {
   }
 
   /**
-   * 대시보드 통계 정보를 반환합니다.
+   * 대시보드 통계 반환
    */
   @GetMapping("/dashboard/stats")
-  public ResponseEntity<Map<String, Object>> getDashboardStats() {
+  public ResponseEntity<Map<String, Object>> getStats() {
     long totalFound = securityLogRepository.count();
+    long aiFixed = securityLogRepository.countByAiFixedTrue();
     long approved = securityLogRepository.countByIsApprovedTrue();
+    long critical = securityLogRepository.countBySeverityIgnoreCase("CRITICAL");
+    long high = securityLogRepository.countBySeverityIgnoreCase("HIGH");
+    long medium = securityLogRepository.countBySeverityIgnoreCase("MEDIUM");
+    long low = securityLogRepository.countBySeverityIgnoreCase("LOW");
     long pending = totalFound - approved;
-
-    long highSeverityCount = securityLogRepository.countBySeverityIgnoreCase("HIGH")
-        + securityLogRepository.countBySeverityIgnoreCase("CRITICAL");
 
     Map<String, Object> stats = Map.of(
         "totalFound", totalFound,
-        "aiFixed", totalFound, // 현재 AI가 모두 패치를 제안했다고 가정
+        "aiFixed", aiFixed,
+        "approved", approved,
         "pending", pending,
-        "approvedAndMerged", approved,
-        "highSeverity", highSeverityCount);
+        "critical", critical,
+        "high", high,
+        "medium", medium,
+        "low", low);
 
     return ResponseEntity.ok(stats);
   }
 
   /**
-   * 사용자가 UI에서 "Approve & Patch" 버튼을 클릭했을 때 호출되는 API.
-   * PR CI 테스트 상태를 검증하고, 성공 시 머지/Jira 상태 변경을 수행합니다.
+   * 취약점 수정안을 승인합니다.
+   * 1) GitHub PR 머지
+   * 2) Jira 티켓 → Done
+   * 3) DB 승인 업데이트
    */
   @PostMapping("/vulnerabilities/approve/{id}")
   public ResponseEntity<?> approveVulnerability(@PathVariable Long id) {
-    log.info("[Dashboard] 승인 요청 수신: ID={}", id);
+    log.info("[Approval] 승인 요청 - id={}", id);
 
-    SecurityLog logEntry = securityLogRepository.findById(id)
-        .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 취약점 ID입니다."));
+    SecurityLog logEntry = securityLogRepository.findById(id).orElse(null);
+    if (logEntry == null) {
+      return ResponseEntity.notFound().build();
+    }
 
     if (logEntry.isApproved()) {
-      return ResponseEntity.badRequest().body("이미 승인 및 처리된 취약점입니다.");
+      return ResponseEntity.badRequest().body(Map.of(
+          "error", "이미 승인된 항목입니다.",
+          "id", id));
     }
 
-    Integer prNumber = logEntry.getPrNumber();
-    if (prNumber == null || prNumber <= 0) {
-      return ResponseEntity.badRequest().body("연결된 GitHub Pull Request 번호가 없습니다.");
+    boolean prMerged = false;
+    boolean jiraDone = false;
+
+    // 1. GitHub PR 검증 및 머지
+    if (logEntry.getPrNumber() != null && logEntry.getPrNumber() > 0) {
+      int prNumber = logEntry.getPrNumber().intValue();
+
+      log.info("[Approval] PR #{} 빌드/테스트 상태 확인을 시작합니다...", prNumber);
+      boolean ciSuccess = githubService.isPrTestsSuccessful(prNumber);
+      log.info("[Approval] PR #{} CI 자동 검증 결과 - passed={}", prNumber, ciSuccess);
+
+      if (!ciSuccess) {
+        return ResponseEntity.badRequest().body("CI 테스트가 아직 진행 중이거나 실패했습니다. 잠시 후 다시 시도해주세요.");
+      }
+
+      prMerged = githubService.mergePullRequest(prNumber);
+      log.info("[Approval] PR 머지 결과 - prNumber={}, success={}", prNumber, prMerged);
+    } else {
+      log.info("[Approval] PR 번호가 없어 머지를 건너뜁니다. id={}", id);
     }
 
-    // 1. GitHub PR CI 테스트 진행/성공 상태 체크
-    boolean isCiPassed = githubService.isPrTestsSuccessful(prNumber);
-    if (!isCiPassed) {
-      log.warn("[Dashboard] PR #{} CI 테스트가 아직 통과되지 않음.", prNumber);
-      return ResponseEntity.badRequest().body("CI 테스트가 아직 진행 중이거나 실패했습니다. 잠시 후 다시 시도해주세요.");
-    }
-
-    // 2. PR 머지 수행
-    boolean isMerged = githubService.mergePullRequest(prNumber);
-    if (!isMerged) {
-      return ResponseEntity.internalServerError().body("GitHub PR 머지에 실패했습니다.");
-    }
-
-    // 3. Jira 티켓 'Done' (또는 승인 완료 상태) 로 변경
+    // 2. Jira 티켓 → Done
     if (logEntry.getJiraKey() != null && !logEntry.getJiraKey().isBlank()) {
       try {
-        // JiraService 내에 티켓을 Done 상태로 바꾸는 메서드가 있다고 가정(구현 필요)
-        jiraService.transitionIssueToDone(logEntry.getJiraKey());
-        log.info("[Dashboard] Jira 이슈 {} 완료 상태로 변경 성공", logEntry.getJiraKey());
+        jiraDone = jiraService.transitionIssueToDone(logEntry.getJiraKey());
+        log.info("[Approval] Jira 전환 결과 - key={}, success={}", logEntry.getJiraKey(), jiraDone);
       } catch (Exception e) {
         log.error("[Dashboard] Jira 상태 변경 실패 (이슈: {})", logEntry.getJiraKey(), e);
-        // Jira 변경 실패가 전체 로직을 롤백시키지는 않도록 경고만 남김
       }
+    } else {
+      log.info("[Approval] Jira 키가 없어 전환을 건너뜁니다. id={}", id);
     }
 
-    // 4. DB 상태 업데이트
+    // 3. DB 승인 업데이트
     logEntry.setApproved(true);
+    logEntry.setStatus("APPROVED");
     logEntry.setResolvedAt(LocalDateTime.now());
     securityLogRepository.save(logEntry);
 
-    log.info("[Dashboard] 승인 및 자동 패치 적용 완료! ID={}", id);
+    log.info("[Approval] 승인 완료 - id={}", id);
+
     return ResponseEntity.ok(Map.of(
         "message", "성공적으로 승인되어 머지되었습니다.",
-        "jiraKey", logEntry.getJiraKey() != null ? logEntry.getJiraKey() : ""));
+        "jiraKey", logEntry.getJiraKey() != null ? logEntry.getJiraKey() : "",
+        "id", id,
+        "approved", true,
+        "prMerged", prMerged,
+        "jiraDone", jiraDone));
   }
 }
