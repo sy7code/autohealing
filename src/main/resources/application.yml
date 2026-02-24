@@ -36,6 +36,20 @@ auto-healing:
 #   SNYK_API_TOKEN=snyk_xxxxxxxxxxxxx
 # Token 없으면 SnykClient가 Mock 데이터를 반환합니다.
 # ──────────────────────────────────────────────
+snyk:
+  api-token: ${SNYK_API_TOKEN:}
+  org-id: ${SNYK_ORG_ID:}
+  base-url:
+    rest: "https://api.snyk.io/rest"
+    v1: "https://api.snyk.io/v1"
+  api-version: "2024-10-15"
+
+# ──────────────────────────────────────────────
+# Azure 연동 설정
+# ──────────────────────────────────────────────
+azure:
+  subscription-id: ${AZURE_SUBSCRIPTION_ID:}
+  storage-account: ${AZURE_STORAGE_ACCOUNT:autohealing2026}
 
 # ──────────────────────────────────────────────
 # GitHub 및 Jira 상태 변이 설정 (하드코딩 제거 분리)
