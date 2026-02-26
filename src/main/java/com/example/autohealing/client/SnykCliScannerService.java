@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Snyk CLI를 직접 실행해 보안 취약점을 스캔하는 서비스.
@@ -102,64 +103,77 @@ public class SnykCliScannerService {
     pb.redirectErrorStream(false); // stderr는 별도 읽기
     pb.environment().put("CI", "true"); // 인터랙티브 프롬프트 방지
 
-    Process process;
+    Process tmpProcess = null;
     try {
-      process = pb.start();
+      tmpProcess = pb.start();
+      final Process process = tmpProcess;
+
+      // stdout (JSON 결과)
+      StringBuilder stdout = new StringBuilder();
+      // stderr (오류 메시지)
+      StringBuilder stderr = new StringBuilder();
+
+      Thread stdoutThread = new Thread(() -> {
+        try (BufferedReader reader = new BufferedReader(
+            new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+          String line;
+          while ((line = reader.readLine()) != null) {
+            stdout.append(line).append("\n");
+          }
+        } catch (Exception ignored) {
+        }
+      });
+
+      Thread stderrThread = new Thread(() -> {
+        try (BufferedReader reader = new BufferedReader(
+            new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
+          String line;
+          while ((line = reader.readLine()) != null) {
+            stderr.append(line).append("\n");
+          }
+        } catch (Exception ignored) {
+        }
+      });
+
+      stdoutThread.start();
+      stderrThread.start();
+
+      // 타임아웃 3분 설정 (Security Scanner 특성 상 오래 걸릴 수 있으나 무한대기 방지)
+      boolean finished = process.waitFor(3, TimeUnit.MINUTES);
+      if (!finished) {
+        log.error("[SnykCLI] 프로세스 실행 시간이 초과되었습니다 (3분).");
+        process.destroyForcibly();
+        return null;
+      }
+
+      int exitCode = process.exitValue();
+      stdoutThread.join(5000);
+      stderrThread.join(5000);
+
+      String stderrStr = stderr.toString();
+      log.debug("[SnykCLI] exitCode={}, stderr={}", exitCode, stderrStr);
+
+      // exitCode: 0=OK, 1=취약점 발견, 2=실패, 3=미지원
+      if (exitCode == 2 || exitCode == 3) {
+        if (stderrStr.contains("MissingApiTokenError") || stderrStr.contains("Authentication")) {
+          throw new SnykAuthException("Snyk 인증 실패");
+        }
+        log.error("[SnykCLI] 스캔 실패 - exitCode={}, stderr={}", exitCode, stderrStr);
+        return null;
+      }
+
+      // exitCode 0(정상) 또는 1(취약점 발견) 모두 JSON 출력 파싱
+      return stdout.toString();
     } catch (Exception e) {
       if (e.getMessage() != null && e.getMessage().contains("cannot run program")) {
         throw new SnykNotInstalledException("snyk 명령어를 찾을 수 없습니다.");
       }
       throw e;
+    } finally {
+      if (tmpProcess != null && tmpProcess.isAlive()) {
+        tmpProcess.destroyForcibly();
+      }
     }
-
-    // stdout (JSON 결과)
-    StringBuilder stdout = new StringBuilder();
-    // stderr (오류 메시지)
-    StringBuilder stderr = new StringBuilder();
-
-    Thread stdoutThread = new Thread(() -> {
-      try (BufferedReader reader = new BufferedReader(
-          new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-        String line;
-        while ((line = reader.readLine()) != null) {
-          stdout.append(line).append("\n");
-        }
-      } catch (Exception ignored) {
-      }
-    });
-
-    Thread stderrThread = new Thread(() -> {
-      try (BufferedReader reader = new BufferedReader(
-          new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
-        String line;
-        while ((line = reader.readLine()) != null) {
-          stderr.append(line).append("\n");
-        }
-      } catch (Exception ignored) {
-      }
-    });
-
-    stdoutThread.start();
-    stderrThread.start();
-
-    int exitCode = process.waitFor();
-    stdoutThread.join(5000);
-    stderrThread.join(5000);
-
-    String stderrStr = stderr.toString();
-    log.debug("[SnykCLI] exitCode={}, stderr={}", exitCode, stderrStr);
-
-    // exitCode: 0=OK, 1=취약점 발견, 2=실패, 3=미지원
-    if (exitCode == 2 || exitCode == 3) {
-      if (stderrStr.contains("MissingApiTokenError") || stderrStr.contains("Authentication")) {
-        throw new SnykAuthException("Snyk 인증 실패");
-      }
-      log.error("[SnykCLI] 스캔 실패 - exitCode={}, stderr={}", exitCode, stderrStr);
-      return null;
-    }
-
-    // exitCode 0(정상) 또는 1(취약점 발견) 모두 JSON 출력 파싱
-    return stdout.toString();
   }
 
   // ─────────────────────────────────────────────────────────────────────────
