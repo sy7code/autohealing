@@ -12,9 +12,17 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.UUID;
 
+import com.example.autohealing.exception.SandboxValidationException;
+
 @Slf4j
 @Service
 public class CodeValidatorService {
+
+  private final SandboxValidator sandboxValidator;
+
+  public CodeValidatorService(SandboxValidator sandboxValidator) {
+    this.sandboxValidator = sandboxValidator;
+  }
 
   /**
    * AI가 제안한 수정 코드가 문법적으로 유효한지(컴파일 가능한지) 검증합니다.
@@ -24,6 +32,14 @@ public class CodeValidatorService {
    * @return 컴파일 성공 시 null, 실패 시 컴파일 오류 메시지(String)를 반환합니다.
    */
   public String validateCode(String code, String fileName) {
+    // 0. AST 기반 샌드박스 정책 위반 선제 검사
+    try {
+      sandboxValidator.validate(code);
+    } catch (SandboxValidationException sandboxEx) {
+      log.warn("[CodeValidator] 샌드박스 보안 정책 위반 감지: {}", sandboxEx.getMessage());
+      return sandboxEx.getMessage();
+    }
+
     Path tempDir = Paths.get("src", "main", "resources", "temp", UUID.randomUUID().toString());
     Path tempFile = null;
 
