@@ -1,0 +1,38 @@
+
+Testing C:\Users\sy7co\Desktop\auto_healing\full\backend\demo...
+
+Tested 264 dependencies for known issues, found 6 issues, 16 vulnerable paths.
+
+
+Issues to fix by upgrading:
+
+  Upgrade org.codehaus.jettison:jettison@1.1 to org.codehaus.jettison:jettison@1.5.4 to fix
+  ??Stack-based Buffer Overflow [Medium Severity][https://security.snyk.io/vuln/SNYK-JAVA-ORGCODEHAUSJETTISON-3033152] in org.codehaus.jettison:jettison@1.1
+    introduced by org.codehaus.jettison:jettison@1.1 and 1 other path(s)
+  ??Denial of Service (DoS) [Medium Severity][https://security.snyk.io/vuln/SNYK-JAVA-ORGCODEHAUSJETTISON-3037311] in org.codehaus.jettison:jettison@1.1
+    introduced by org.codehaus.jettison:jettison@1.1 and 1 other path(s)
+  ??Denial of Service (DoS) [High Severity][https://security.snyk.io/vuln/SNYK-JAVA-ORGCODEHAUSJETTISON-3367610] in org.codehaus.jettison:jettison@1.1
+    introduced by org.codehaus.jettison:jettison@1.1 and 1 other path(s)
+  ??Denial of Service (DoS) [High Severity][https://security.snyk.io/vuln/SNYK-JAVA-ORGCODEHAUSJETTISON-3168085] in org.codehaus.jettison:jettison@1.1
+    introduced by org.codehaus.jettison:jettison@1.1 and 1 other path(s)
+
+
+Issues with no direct upgrade or patch:
+  ??Improper Input Validation [Critical Severity][https://security.snyk.io/vuln/SNYK-JAVA-ORGCODEHAUSJACKSON-3326362] in org.codehaus.jackson:jackson-mapper-asl@1.9.2
+    introduced by org.codehaus.jackson:jackson-mapper-asl@1.9.2 and 3 other path(s)
+  No upgrade or patch available
+  ??XML External Entity (XXE) Injection [High Severity][https://security.snyk.io/vuln/SNYK-JAVA-ORGCODEHAUSJACKSON-534878] in org.codehaus.jackson:jackson-mapper-asl@1.9.2
+    introduced by org.codehaus.jackson:jackson-mapper-asl@1.9.2 and 3 other path(s)
+  No upgrade or patch available
+
+
+
+Organization:      sy7code
+Package manager:   gradle
+Target file:       build.gradle
+Project name:      demo
+Open source:       no
+Project path:      C:\Users\sy7co\Desktop\auto_healing\full\backend\demo
+Licenses:          enabled
+
+
