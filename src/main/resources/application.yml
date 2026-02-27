@@ -22,6 +22,18 @@ jira:
   issue:
     type: "Task"
 
+# Custom Security Settings
+jwt:
+  # Secret key MUST be 256 bits (32 chars) minimum. Can be overridden in .env
+  secret: ${JWT_SECRET:v9y/B?E(H+MbQeThWmZq4t7w!z%C&F)J@NcRfUjXn2r5u8x/A?D(G-KaPdSgVkYp}
+  # Token expiration time in milliseconds (default: 24 hours)
+  expiration: 86400000
+
+admin:
+  # Static admin credentials for dashboard access
+  username: ${ADMIN_USERNAME:admin}
+  password: ${ADMIN_PASSWORD:password123}
+
 # ──────────────────────────────────────────────
 # Auto-Healing Feature Toggle
 #   manual : Jira 티켓 생성만 수행 (기본값)
