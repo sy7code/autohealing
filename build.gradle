@@ -1,6 +1,6 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '4.0.2'
+	id 'org.springframework.boot' version '4.0.3'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
 
@@ -36,12 +36,13 @@ dependencies {
 	// 커스텀 @ConfigurationProperties 메타데이터 생성 (IDE 자동완성 + 경고 해소)
 	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'com.h2database:h2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구
 	implementation 'com.azure.resourcemanager:azure-resourcemanager:2.34.0'
-	implementation 'com.azure:azure-identity:1.11.0'
+	implementation 'com.azure:azure-identity:1.15.1'
 
 	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
 	runtimeOnly 'org.postgresql:postgresql'
@@ -53,6 +54,20 @@ dependencies {
 	implementation 'com.atlassian.jira:jira-rest-java-client-core:5.2.2'
 	implementation 'io.atlassian.fugue:fugue:4.7.2'
 
+	// 4. Spring Security & JWT (for Dashboard Authentication)
+	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+	testImplementation 'org.springframework.security:spring-security-test'
+	testImplementation 'org.mockito:mockito-core:5.11.0'
+	testImplementation 'org.mockito:mockito-junit-jupiter:5.11.0'
+
+	// 5. Swagger (SpringDoc OpenAPI for API Documentation)
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.5'
+
+	// 6. JavaParser (for strict AST-based AI Code Sandbox Validation)
+	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.25.9'
 }
 
 tasks.named('bootJar') {

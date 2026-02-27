@@ -180,140 +180,135 @@ public class SecurityOrchestrator {
         continue;
       }
 
-      boolean isAiFixed = false;
-      String fixedCode = "";
-      String explanation = "";
-      String originalCode = "";
-
-      try {
-        originalCode = readSourceFile(issue);
-        String vulnInfo = buildVulnerabilityInfo(issue);
-        AiRemediationResult result = aiRemediationService.fixCode(originalCode, vulnInfo);
-        fixedCode = result.getFixedCode();
-        explanation = result.getExplanation();
-
-        log.info("[Orchestrator][AI] 수정 완료 - id={} ({}자→{}자)",
-            issue.getId(), originalCode.length(), fixedCode.length());
-
-        // 컴파일 유효성 검증
-        String fileName = extractFilePath(issue.getDescription());
-        if (fileName == null)
-          fileName = "Unknown.java";
-
-        String compileError = codeValidatorService.validateCode(fixedCode, fileName);
-
-        if (compileError != null) {
-          log.warn("[Orchestrator][AI] 컴파일 검증 실패 - id={}, error=\n{}", issue.getId(), compileError);
-          jiraService.addCommentToIssue(issueKey,
-              "🚨 **AI 수정안 컴파일 오류 발생**\n" +
-                  "AI가 생성한 수정 코드가 컴파일되지 않아 PR 생성을 중단했습니다.\n" +
-                  "**파일:** `" + fileName + "`\n" +
-                  "**에러 내용:**\n{code:java}\n" + compileError + "\n{code}");
-          // 컴파일 실패 → isAiFixed = false 유지
-        } else {
-          fixedIds.add(issue.getId());
-          isAiFixed = true;
-        }
-      } catch (Exception e) {
-        log.warn("[Orchestrator][AI] 수정 실패 - id={}", issue.getId(), e);
-        explanation = "AI 자동 수정 중 오류 발생: " + e.getMessage();
-      }
-
-      // 0. DB에 SecurityLog 먼저 저장하여 ID 발급받기
-      SecurityLog securityLog = new SecurityLog(
-          repoName,
-          issue.getTitle(),
-          issue.getSeverity().name(),
-          isAiFixed ? "AI 패치 대기중" : "수동 리뷰 필요");
-      securityLog.setSnykId(issue.getId());
-      securityLog.setAiFixed(isAiFixed);
-      securityLog.setOriginalCode(originalCode);
-      securityLog.setPatchedCode(fixedCode);
-      securityLog.setFixExplanation(explanation);
-      securityLog = securityLogRepository.save(securityLog);
-      log.info("[Orchestrator] DB 저장 완료 - dbId={}, snykId={}", securityLog.getId(), issue.getId());
-
-      String dashboardDetailUrl = vercelUrl + "/detail/" + securityLog.getId();
-
-      // 1. 개별 Jira 티켓 생성
-      java.util.List<String> labels = new java.util.ArrayList<>();
-      labels.add("Auto-Fix");
-      if (isAiFixed) {
-        labels.add("AI-Fixed");
-        labels.add("Security-Patch");
-      }
-
-      String markdownDesc = String.format("""
-          | 특성 | 세부 정보 |
-          | :--- | :--- |
-          | **취약점 ID** | %s |
-          | **위험도**   | %s |
-          | **패키지 경로**| %s |
-          | **AI 자동수정**| %s |
-          | **대시보드 링크**| [Vercel 상세보기 바로가기](%s) |
-
-          ### 💡 상세 내용
-          %s
-
-          %s
-          """,
-          issue.getId(),
-          issue.getSeverity().name(),
-          extractFilePath(issue.getDescription()),
-          isAiFixed ? "✅ 예 (Github PR 생성됨)" : "❌ 아니오",
-          dashboardDetailUrl,
-          issue.getDescription(),
-          isAiFixed ? ("=== AI 자동 수정 내용 요약 ===\n" + explanation) : "");
-
-      String jiraKey = jiraService.createIssue(
-          issue.getTitle(), markdownDesc, issue.getSeverity().name(), labels);
-
-      log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), jiraKey);
-
-      // Discord Alert: Snyk Vulnerability Detected
-      if (jiraKey != null && issue.getSeverity() != null) {
-        discordNotificationService.sendSnykAlert(
-            issue.getTitle(),
-            issue.getSeverity().name(),
-            jiraConfig.getHost() + "/browse/" + jiraKey);
-      }
-
-      // Jira Key 업데이트
-      if (jiraKey != null) {
-        securityLog.setJiraKey(jiraKey);
-        securityLogRepository.save(securityLog);
-      }
-
-      // 2. AI 수정 성공 + 컴파일 통과 시 PR에 Jira Key 넘겨주기 및 In Progress 전환
-      if (isAiFixed && jiraKey != null) {
-        jiraService.transitionIssue(jiraKey, jiraConfig.getTransition().getInProgress());
-        Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode,
-            explanation + "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey);
-        if (prNumber != null) {
-          securityLog.setPrNumber(prNumber);
-          securityLogRepository.save(securityLog);
-
-          String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
-          discordNotificationService.sendPrCreatedAlert(
-              "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
-              prUrl,
-              dashboardDetailUrl);
-        }
-      } else if (isAiFixed) {
-        Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
-        if (prNumber != null) {
-          securityLog.setPrNumber(prNumber);
-          securityLogRepository.save(securityLog);
-
-          String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
-          discordNotificationService.sendPrCreatedAlert(
-              "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
-              prUrl,
-              dashboardDetailUrl);
-        }
+      boolean isFixed = processSingleVulnerability(issueKey, repoName, issue);
+      if (isFixed) {
+        fixedIds.add(issue.getId());
       }
     }
     return fixedIds;
+  }
+
+  private boolean processSingleVulnerability(String parentIssueKey, String repoName, UnifiedIssue issue) {
+    boolean isAiFixed = false;
+    String fixedCode = "";
+    String explanation = "";
+    String originalCode = "";
+
+    try {
+      originalCode = readSourceFile(issue);
+      String vulnInfo = buildVulnerabilityInfo(issue);
+      AiRemediationResult result = aiRemediationService.fixCode(originalCode, vulnInfo);
+      fixedCode = result.getFixedCode();
+      explanation = result.getExplanation();
+
+      log.info("[Orchestrator][AI] 수정 완료 - id={} ({}자→{}자)",
+          issue.getId(), originalCode.length(), fixedCode.length());
+
+      String fileName = extractFilePath(issue.getDescription());
+      if (fileName == null)
+        fileName = "Unknown.java";
+
+      String compileError = codeValidatorService.validateCode(fixedCode, fileName);
+
+      if (compileError != null) {
+        log.warn("[Orchestrator][AI] 컴파일 검증 실패 - id={}, error=\n{}", issue.getId(), compileError);
+        jiraService.addCommentToIssue(parentIssueKey,
+            "🚨 **AI 수정안 컴파일 오류 발생**\n" +
+                "AI가 생성한 수정 코드가 컴파일되지 않아 PR 생성을 중단했습니다.\n" +
+                "**파일:** `" + fileName + "`\n" +
+                "**에러 내용:**\n{code:java}\n" + compileError + "\n{code}");
+      } else {
+        isAiFixed = true;
+      }
+    } catch (Exception e) {
+      log.warn("[Orchestrator][AI] 수정 실패 - id={}", issue.getId(), e);
+      explanation = "AI 자동 수정 중 오류 발생: " + e.getMessage();
+    }
+
+    createTicketsAndPrs(repoName, issue, originalCode, fixedCode, explanation, isAiFixed);
+    return isAiFixed;
+  }
+
+  private void createTicketsAndPrs(String repoName, UnifiedIssue issue, String originalCode, String fixedCode,
+      String explanation, boolean isAiFixed) {
+    SecurityLog securityLog = new SecurityLog(
+        repoName,
+        issue.getTitle(),
+        issue.getSeverity().name(),
+        isAiFixed ? "AI 패치 대기중" : "수동 리뷰 필요");
+    securityLog.setSnykId(issue.getId());
+    securityLog.setAiFixed(isAiFixed);
+    securityLog.setOriginalCode(originalCode);
+    securityLog.setPatchedCode(fixedCode);
+    securityLog.setFixExplanation(explanation);
+    securityLog = securityLogRepository.save(securityLog);
+    log.info("[Orchestrator] DB 저장 완료 - dbId={}, snykId={}", securityLog.getId(), issue.getId());
+
+    String dashboardDetailUrl = vercelUrl + "/detail/" + securityLog.getId();
+
+    java.util.List<String> labels = new java.util.ArrayList<>();
+    labels.add("Auto-Fix");
+    if (isAiFixed) {
+      labels.add("AI-Fixed");
+      labels.add("Security-Patch");
+    }
+
+    String markdownDesc = String.format("""
+        | 특성 | 세부 정보 |
+        | :--- | :--- |
+        | **취약점 ID** | %s |
+        | **위험도**   | %s |
+        | **패키지 경로**| %s |
+        | **AI 자동수정**| %s |
+        | **대시보드 링크**| [Vercel 상세보기 바로가기](%s) |
+
+        ### 💡 상세 내용
+        %s
+
+        %s
+        """,
+        issue.getId(),
+        issue.getSeverity().name(),
+        extractFilePath(issue.getDescription()),
+        isAiFixed ? "✅ 예 (Github PR 생성됨)" : "❌ 아니오",
+        dashboardDetailUrl,
+        issue.getDescription(),
+        isAiFixed ? ("=== AI 자동 수정 내용 요약 ===\n" + explanation) : "");
+
+    String jiraKey = jiraService.createIssue(
+        issue.getTitle(), markdownDesc, issue.getSeverity().name(), labels);
+
+    log.info("[Orchestrator][Async] 개별 티켓 생성: {} → {}", issue.getId(), jiraKey);
+
+    if (jiraKey != null && issue.getSeverity() != null) {
+      discordNotificationService.sendSnykAlert(
+          issue.getTitle(),
+          issue.getSeverity().name(),
+          jiraConfig.getHost() + "/browse/" + jiraKey);
+    }
+
+    if (jiraKey != null) {
+      securityLog.setJiraKey(jiraKey);
+      securityLogRepository.save(securityLog);
+    }
+
+    if (isAiFixed) {
+      if (jiraKey != null) {
+        jiraService.transitionIssue(jiraKey, jiraConfig.getTransition().getInProgress());
+        explanation += "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey;
+      }
+      Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+      if (prNumber != null) {
+        securityLog.setPrNumber(prNumber);
+        securityLogRepository.save(securityLog);
+
+        String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+        discordNotificationService.sendPrCreatedAlert(
+            "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
+            prUrl,
+            dashboardDetailUrl);
+      }
+    }
   }
 
   /**

@@ -1,0 +1,23 @@
+
+Testing C:\Users\sy7co\Desktop\auto_healing\full\backend\demo ...
+
+Open Issues
+
+ ??[LOW] Spring Cross-Site Request Forgery (CSRF)
+   Finding ID: 350f940c-31b6-415f-8b0e-e7141a67f1a0
+   Path: src/main/java/com/example/autohealing/controller/AuthController.java, line 33
+   Info: The loginRequest parameter is vulnerable to Cross Site Request Forgery (CSRF) attacks due to not using Spring Security. This could allow an attacker to execute requests on a user's behalf. Consider including Spring Security's CSRF protection within your application.
+
+ ??[LOW] Spring Cross-Site Request Forgery (CSRF)
+   Finding ID: 7273b68d-ec45-42e3-9edb-de9ec3030b8f
+   Path: src/main/java/com/example/autohealing/controller/GithubWebhookController.java, line 47
+   Info: The payload parameter is vulnerable to Cross Site Request Forgery (CSRF) attacks due to not using Spring Security. This could allow an attacker to execute requests on a user's behalf. Consider including Spring Security's CSRF protection within your application.
+
+
+
+?????????????????????????????????????????????????????????????????????????????????????Test Summary                                                                  ????                                                                              ????  Organization:      sy7code                                                  ????  Test type:         Static code analysis                                     ????  Project path:      C:\Users\sy7co\Desktop\auto_healing\full\backend\demo    ????                                                                              ????  Total issues:   2                                                           ????  Ignored issues: 0 [ 0 HIGH  0 MEDIUM  0 LOW ]                               ????  Open issues:    2 [ 0 HIGH  0 MEDIUM  2 LOW ]                               ???겸?????????????????????????????????????????????????????????????????????????????????    
+?뮕 Tip
+
+   To view ignored issues, use the --include-ignores option.
+                                                            
+

@@ -27,20 +27,27 @@ import java.util.Map;
 @Component
 public class SnykClient {
 
-  private static final String SNYK_REST_BASE = "https://api.snyk.io/rest";
-  private static final String SNYK_V1_BASE = "https://api.snyk.io/v1";
-  private static final String SNYK_API_VERSION = "2024-10-15";
+  // API 설정은 application.yml 에서 주입받습니다.
 
   private final WebClient webClient;
   private final String snykApiToken;
   private final String snykOrgId;
+  private final String restBaseUrl;
+  private final String v1BaseUrl;
+  private final String apiVersion;
 
   public SnykClient(WebClient webClient,
-      @Value("${SNYK_API_TOKEN:}") String snykApiToken,
-      @Value("${SNYK_ORG_ID:}") String snykOrgId) {
+      @Value("${snyk.api-token:}") String snykApiToken,
+      @Value("${snyk.org-id:}") String snykOrgId,
+      @Value("${snyk.base-url.rest:https://api.snyk.io/rest}") String restBaseUrl,
+      @Value("${snyk.base-url.v1:https://api.snyk.io/v1}") String v1BaseUrl,
+      @Value("${snyk.api-version:2024-10-15}") String apiVersion) {
     this.webClient = webClient;
     this.snykApiToken = snykApiToken;
     this.snykOrgId = snykOrgId;
+    this.restBaseUrl = restBaseUrl;
+    this.v1BaseUrl = v1BaseUrl;
+    this.apiVersion = apiVersion;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -86,8 +93,8 @@ public class SnykClient {
   private List<String> fetchProjectIds() {
     try {
       Map<String, Object> response = webClient.get()
-          .uri(SNYK_REST_BASE + "/orgs/{orgId}/projects?version={ver}&limit=100",
-              snykOrgId, SNYK_API_VERSION)
+          .uri(restBaseUrl + "/orgs/{orgId}/projects?version={ver}&limit=100",
+              snykOrgId, apiVersion)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
           .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
           .retrieve()
@@ -123,7 +130,7 @@ public class SnykClient {
       log.info("[SnykClient] 이슈 조회 - projectId={}", projectId);
 
       Map<String, Object> response = webClient.post()
-          .uri(SNYK_V1_BASE + "/org/{orgId}/project/{projectId}/issues",
+          .uri(v1BaseUrl + "/org/{orgId}/project/{projectId}/issues",
               snykOrgId, projectId)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
           .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
