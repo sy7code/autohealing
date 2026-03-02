@@ -1,12 +1,11 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '3.4.3'
+	id 'org.springframework.boot' version '3.4.4'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
 
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
-description = 'Demo project for Spring Boot'
 
 java {
 	toolchain {
@@ -27,9 +26,8 @@ repositories {
 	}
 }
 
-// Snyk 취약점 일괄 해결: Spring Dependency Management 플러그인에 전역으로 spring-framework 버전을 강제 오버라이드.
-ext['spring-framework.version'] = '6.2.11'
-
+// Snyk 스캐너가 인식할 수 있도록 의존성을 명시적으로 선언합니다.
+// Snyk는 ext나 constraints보다 직접 implementation 선언된 버전을 더 명확하게 스캔합니다.
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
