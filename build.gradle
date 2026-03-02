@@ -83,6 +83,9 @@ dependencies {
 
 	// 6. JavaParser (for strict AST-based AI Code Sandbox Validation)
 	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.25.9'
+    
+    // 7. Spring Boot Actuator (헬스체크 엔드포인트 /actuator/health)
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 }
 
 tasks.named('bootJar') {
