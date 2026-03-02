@@ -42,7 +42,20 @@ dependencies {
 	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
 	runtimeOnly 'org.postgresql:postgresql'
 
-
+	constraints {
+		implementation('org.springframework:spring-core:6.2.11') {
+			because 'fix CVE-2025-41249'
+		}
+		implementation('org.springframework:spring-beans:6.2.10') {
+			because 'fix CVE-2025-41242'
+		}
+		implementation('org.springframework:spring-web:6.2.8') {
+			because 'fix CVE-2025-41234'
+		}
+		implementation('org.springframework:spring-context:6.2.7') {
+			because 'fix CVE-2025-22233'
+		}
+	}
 }
 
 tasks.named('test') {
