@@ -22,9 +22,12 @@ import java.util.Optional;
  * 프론트엔드(Next.js)에서 필요한 통계 데이터 및 개별 로그(SecurityLog) 내역을 제공하며,
  * AI가 제안한 소스코드 수정안에 대한 최종 반영(승인) 처리 엔드포인트를 담당합니다.
  */
+import org.springframework.security.access.prepost.PreAuthorize;
+
 @Slf4j
 @RestController
 @RequestMapping("/api")
+@PreAuthorize("hasRole('ADMIN')")
 @Tag(name = "Dashboard API", description = "Endpoints for vulnerability dashboard views and approval operations. Requires JWT Auth.")
 @RequiredArgsConstructor
 public class DashboardController {

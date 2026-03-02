@@ -1,8 +1,6 @@
 package com.example.autohealing.controller;
 
-import com.example.autohealing.config.security.JwtAuthFilter;
 import com.example.autohealing.config.security.JwtProvider;
-import com.example.autohealing.config.security.SecurityConfig;
 import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.service.DiscordNotificationService;
 import com.example.autohealing.service.GithubService;
@@ -91,7 +89,7 @@ public class SecurityIntegrationTest {
 
   @Test
   void testAccessProtectedEndpointWithValidTokenReturnsOk() throws Exception {
-    String token = jwtProvider.generateToken("testadmin");
+    String token = jwtProvider.generateToken("testadmin", "ROLE_ADMIN");
 
     mockMvc.perform(get("/api/dashboard/stats")
         .header("Authorization", "Bearer " + token))

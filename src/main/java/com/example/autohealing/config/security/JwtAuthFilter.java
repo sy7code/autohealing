@@ -11,8 +11,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import java.io.IOException;
 import java.util.Collections;
+import java.util.List;
 
 @Component
 public class JwtAuthFilter extends OncePerRequestFilter {
@@ -31,10 +33,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     if (token != null && jwtProvider.validateToken(token)) {
       String username = jwtProvider.getUsernameFromToken(token);
+      String role = jwtProvider.getRoleFromToken(token);
+
+      List<SimpleGrantedAuthority> authorities = (role != null)
+          ? Collections.singletonList(new SimpleGrantedAuthority(role))
+          : Collections.emptyList();
 
       // For simple admin authentication, we bypass complex UserDetails and DB lookup.
       UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-          username, null, Collections.emptyList());
+          username, null, authorities);
 
       authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
 
