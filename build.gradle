@@ -1,12 +1,11 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '4.0.3'
+	id 'org.springframework.boot' version '3.4.4'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
 
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
-description = 'Demo project for Spring Boot'
 
 java {
 	toolchain {
@@ -27,7 +26,15 @@ repositories {
 	}
 }
 
+// Snyk 스캐너가 인식할 수 있도록 연관된 명시적 의존성을 직권으로 올립니다.
 dependencies {
+	// Snyk 관련 Spring Framework 강제 버전 명시 (6.2.11 이상)
+	implementation 'org.springframework:spring-webmvc:6.2.11'
+	implementation 'org.springframework:spring-web:6.2.11'
+	implementation 'org.springframework:spring-beans:6.2.11'
+	implementation 'org.springframework:spring-context:6.2.11'
+	implementation 'org.springframework:spring-core:6.2.11'
+
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-webflux'
@@ -35,7 +42,6 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok'
 	// 커스텀 @ConfigurationProperties 메타데이터 생성 (IDE 자동완성 + 경고 해소)
 	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
-	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'com.h2database:h2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -64,22 +70,7 @@ dependencies {
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.11.0'
 
 	// 5. Swagger (SpringDoc OpenAPI for API Documentation)
-	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.16'
-
-	constraints {
-		implementation('org.springframework:spring-core:6.2.11') {
-			because 'fix CVE-2025-41249'
-		}
-		implementation('org.springframework:spring-beans:6.2.10') {
-			because 'fix CVE-2025-41242'
-		}
-		implementation('org.springframework:spring-web:6.2.8') {
-			because 'fix CVE-2025-41234'
-		}
-		implementation('org.springframework:spring-context:6.2.7') {
-			because 'fix CVE-2025-22233'
-		}
-	}
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.5'
 
 	// 6. JavaParser (for strict AST-based AI Code Sandbox Validation)
 	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.25.9'
