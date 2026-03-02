@@ -28,6 +28,15 @@ repositories {
 }
 
 dependencies {
+	constraints {
+		// Snyk 취약점 조치 (CVSS 8.7 ~ 2.3)
+		// Spring Boot 버전에 상관없이 하위 모듈들의 최소 버전을 안전한 버전으로 강제 주입합니다.
+		implementation 'org.springframework:spring-core:6.2.11'
+		implementation 'org.springframework:spring-beans:6.2.11' // 6.2.10 요구됨 -> 6.2.11 일괄 통일
+		implementation 'org.springframework:spring-web:6.2.11'   // 6.2.8 요구됨 -> 6.2.11 일괄 통일
+		implementation 'org.springframework:spring-context:6.2.11'// 6.2.7 요구됨 -> 6.2.11 일괄 통일
+	}
+
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-webflux'

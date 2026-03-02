@@ -103,28 +103,30 @@ public class GiantPipelineIntegrationTest {
     // 2단계: 비동기 작업 실행 (테스트에서는 직접 호출하여 결과를 즉시 확인)
     orchestrator.runSnykScanAndUpdate(parentIssueKey, "my-repo", "/tmp/scan");
 
-    // [Then] 전체 파이프라인 단계별 호출 검증
+    // [Then] 전체 파이프라인 단계별 호출 검증 (비동기 처리를 위해 timeout 속성 적용)
     // 1. Snyk 스캔 호출 확인
-    verify(snykCliScannerService).scan(eq("/tmp/scan"));
+    verify(snykCliScannerService, timeout(2000)).scan(eq("/tmp/scan"));
 
     // 2. AI 수정 서비스 호출 확인 (Critical 등급이므로 호출되어야 함)
-    verify(aiRemediationService).fixCode(anyString(), contains("SNYK-JAVA-SPRING-12345"));
+    verify(aiRemediationService, timeout(2000)).fixCode(anyString(), contains("SNYK-JAVA-SPRING-12345"));
 
     // 3. 컴파일 검증 호출 확인
-    verify(codeValidatorService).validateCode(eq(mockAiResult.getFixedCode()), anyString());
+    verify(codeValidatorService, timeout(2000)).validateCode(eq(mockAiResult.getFixedCode()), anyString());
 
     // 4. Jira 개별 취약점 티켓 생성 및 진행 상태 변경 확인
-    verify(jiraService).createIssue(eq(mockIssue.getTitle()), anyString(), eq("CRITICAL"), anyList());
-    verify(jiraService).transitionIssue(eq("SCRUM-102"), any());
+    verify(jiraService, timeout(2000)).createIssue(eq(mockIssue.getTitle()), anyString(), eq("CRITICAL"), anyList());
+    verify(jiraService, timeout(2000)).transitionIssue(eq("SCRUM-102"), any());
 
     // 5. Github PR 생성 확인
-    verify(githubService).createPullRequest(eq(mockIssue), anyString(), eq(mockAiResult.getFixedCode()), anyString());
+    verify(githubService, timeout(2000)).createPullRequest(eq(mockIssue), anyString(), eq(mockAiResult.getFixedCode()),
+        anyString());
 
     // 6. Discord 알림 발송 확인 (Snyk 발견 시, PR 생성 시)
-    verify(discordNotificationService, atLeastOnce()).sendSnykAlert(anyString(), anyString(), anyString());
-    verify(discordNotificationService).sendPrCreatedAlert(anyString(), contains("777"), anyString());
+    verify(discordNotificationService, timeout(2000).atLeastOnce()).sendSnykAlert(anyString(), anyString(),
+        anyString());
+    verify(discordNotificationService, timeout(2000)).sendPrCreatedAlert(anyString(), contains("777"), anyString());
 
     // 7. DB 최종 결과 업데이트 루틴 확인
-    verify(securityLogRepository, atLeast(2)).save(any(SecurityLog.class));
+    verify(securityLogRepository, timeout(2000).atLeast(2)).save(any(SecurityLog.class));
   }
 }

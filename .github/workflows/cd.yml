@@ -86,15 +86,22 @@ jobs:
         env:
           # 빌드 시점 환경변수 (런타임 값은 App Service에서 주입)
           SPRING_PROFILES_ACTIVE: prod
-          JIRA_HOST: https://placeholder.atlassian.net
-          JIRA_EMAIL: placeholder@example.com
-          JIRA_API_TOKEN: placeholder-token
-          JIRA_PROJECT_KEY: SCRUM
-          DISCORD_WEBHOOK_URL: https://discord.com/api/webhooks/placeholder
-          JWT_SECRET: placeholder-jwt-secret-for-build-only
-          ADMIN_USERNAME: admin
-          ADMIN_PASSWORD: password123
-          AZURE_SUBSCRIPTION_ID: placeholder
+          DB_URL: ${{ secrets.DB_URL }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          JIRA_HOST: ${{ secrets.JIRA_HOST }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          GITHUB_TOKEN_PAT: ${{ secrets.GITHUB_TOKEN_PAT }}
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
 
       # ── 6. JAR 파일명 추출 ────────────────────────────────────
       - name: Extract JAR file name
@@ -164,19 +171,3 @@ jobs:
           echo "| 커밋 SHA | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 트리거 | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 배포 시각 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
-
-  deploy-frontend:
-    name: Deploy Frontend to Vercel
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          vercel-args: '--prod'
-          working-directory: frontend
