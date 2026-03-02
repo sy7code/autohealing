@@ -64,7 +64,22 @@ dependencies {
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.11.0'
 
 	// 5. Swagger (SpringDoc OpenAPI for API Documentation)
-	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.5'
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.16'
+
+	constraints {
+		implementation('org.springframework:spring-core:6.2.11') {
+			because 'fix CVE-2025-41249'
+		}
+		implementation('org.springframework:spring-beans:6.2.10') {
+			because 'fix CVE-2025-41242'
+		}
+		implementation('org.springframework:spring-web:6.2.8') {
+			because 'fix CVE-2025-41234'
+		}
+		implementation('org.springframework:spring-context:6.2.7') {
+			because 'fix CVE-2025-22233'
+		}
+	}
 
 	// 6. JavaParser (for strict AST-based AI Code Sandbox Validation)
 	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.25.9'
