@@ -28,16 +28,26 @@ public class JwtProvider {
     this.key = Keys.hmacShaKeyFor(secretKey.getBytes(StandardCharsets.UTF_8));
   }
 
-  public String generateToken(String username) {
+  public String generateToken(String username, String role) {
     Date now = new Date();
     Date validity = new Date(now.getTime() + expirationMillis);
 
     return Jwts.builder()
         .subject(username)
+        .claim("role", role)
         .issuedAt(now)
         .expiration(validity)
         .signWith(key)
         .compact();
+  }
+
+  public String getRoleFromToken(String token) {
+    Claims claims = Jwts.parser()
+        .verifyWith(key)
+        .build()
+        .parseSignedClaims(token)
+        .getPayload();
+    return claims.get("role", String.class);
   }
 
   public boolean validateToken(String token) {

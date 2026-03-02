@@ -32,7 +32,7 @@ public class AuthController {
   @PostMapping("/login")
   public ResponseEntity<?> login(@RequestBody LoginRequest loginRequest) {
     if (adminUsername.equals(loginRequest.getUsername()) && adminPassword.equals(loginRequest.getPassword())) {
-      String token = jwtProvider.generateToken(adminUsername);
+      String token = jwtProvider.generateToken(adminUsername, "ROLE_ADMIN");
       return ResponseEntity.ok(Map.of("token", token));
     }
     return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Invalid username or password"));
