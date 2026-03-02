@@ -5,6 +5,8 @@ import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.service.DiscordNotificationService;
 import com.example.autohealing.service.GithubService;
 import com.example.autohealing.service.JiraService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -23,6 +25,7 @@ import java.util.Optional;
 @Slf4j
 @RestController
 @RequestMapping("/api")
+@Tag(name = "Dashboard API", description = "Endpoints for vulnerability dashboard views and approval operations. Requires JWT Auth.")
 @RequiredArgsConstructor
 public class DashboardController {
 
@@ -38,6 +41,7 @@ public class DashboardController {
    *
    * @return SecurityLog 리스트 (상태코드 200)
    */
+  @Operation(summary = "Get Recent Vulnerabilities", description = "Returns the top 100 most recently detected vulnerabilities.")
   @GetMapping("/dashboard/list")
   public ResponseEntity<List<SecurityLog>> getList() {
     List<SecurityLog> logs = securityLogRepository.findTop100ByOrderByDetectedAtDesc();
@@ -51,6 +55,7 @@ public class DashboardController {
    *
    * @return 변환된 SecurityLogDTO 리스트 (최신순 정렬, 상태코드 200)
    */
+  @Operation(summary = "Get All Vulnerabilities (DTO)", description = "Returns all vulnerabilities mapped to the frontend SecurityLogDTO format.")
   @GetMapping("/vulnerabilities")
   public ResponseEntity<List<SecurityLogDTO>> getAllVulnerabilities() {
     // 실제 운영 시 페이징 처리 권장 (Pageable)
@@ -116,6 +121,7 @@ public class DashboardController {
    * @param id 조회할 취약점 로그(SecurityLog)의 PK 식별자
    * @return 취약점 로그 정보 (존재하지 않으면 404 반환)
    */
+  @Operation(summary = "Get Vulnerability Details", description = "Returns detailed information for a specific vulnerability ID.")
   @GetMapping("/vulnerabilities/{id}")
   public ResponseEntity<?> getVulnerabilityDetail(@PathVariable Long id) {
     Optional<SecurityLog> logOpt = securityLogRepository.findById(id);
@@ -132,6 +138,7 @@ public class DashboardController {
    *
    * @return 통계 지표가 담긴 Map 객체 (상태코드 200)
    */
+  @Operation(summary = "Get Dashboard Statistics", description = "Returns aggravated statistics (count by severity, AI fixed, etc.) for the dashboard overview.")
   @GetMapping("/dashboard/stats")
   public ResponseEntity<Map<String, Object>> getStats() {
     long totalFound = securityLogRepository.count();
@@ -168,6 +175,7 @@ public class DashboardController {
    * @param id 승인할 취약점 로그의 PK 식별자
    * @return 승인 결과 메시지 및 상태 정보 Map 반환 (실패 시 400 에러)
    */
+  @Operation(summary = "Approve Vulnerability Patch", description = "Approves an AI-generated fix, verifies CI status, merges the PR, and resolves the Jira ticket.")
   @PostMapping("/vulnerabilities/approve/{id}")
   public ResponseEntity<?> approveVulnerability(@PathVariable Long id) {
     log.info("[Approval] 승인 요청 - id={}", id);
