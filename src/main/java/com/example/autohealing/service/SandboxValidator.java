@@ -5,6 +5,10 @@ import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import com.github.javaparser.ast.stmt.DoStmt;
+import com.github.javaparser.ast.stmt.ForStmt;
+import com.github.javaparser.ast.stmt.WhileStmt;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -51,7 +55,12 @@ public class SandboxValidator {
   // AST 노드 분석 중 직접적으로 차단할 인스턴스/정적 메서드 호출명 세트
   // ex) System.exit(0), Runtime.getRuntime().exec()
   private static final Set<String> RESTRICTED_METHOD_CALLS = Set.of(
-      "exit", "exec", "halt", "load", "loadLibrary", "gc", "runFinalization", "freeMemory", "invoke");
+      "exit", "exec", "halt", "load", "loadLibrary", "gc", "runFinalization", "freeMemory", "invoke", "start", "sleep");
+
+  // AST 노드 분석 중 직접 생성을 차단할 악성 의심 클래스/객체
+  private static final Set<String> RESTRICTED_OBJECT_CREATIONS = Set.of(
+      "Thread", "ProcessBuilder", "FileInputStream", "FileOutputStream", "Socket", "ServerSocket", "URL", "File",
+      "RandomAccessFile", "SocketChannel");
 
   /**
    * 문자열 형태의 소스 코드를 AST로 파싱하여 샌드박스 정책 위반이 있는지 검사합니다.
@@ -72,6 +81,12 @@ public class SandboxValidator {
 
       // 2. 위험한 메서드 호출 검증
       validateMethodCalls(cu);
+
+      // 3. 무한 루프 및 CPU 치명적 로직 차단
+      validateLoops(cu);
+
+      // 4. 위험한 시스템 객체 생성 차단(File, Thread 등)
+      validateObjectCreations(cu);
 
       log.debug("[SandboxValidator] AST 기반 보안 샌드박스 검사 통과 (안전한 코드)");
 
@@ -119,6 +134,44 @@ public class SandboxValidator {
         // 특히 System.exit, Runtime.exec 등을 직접 겨냥.
         // 메서드명만으로 체크하므로 엄격한 편이나, 백엔드 로직 자동 수정 환경에서는 이게 안전합니다.
         throw new SandboxValidationException("보안 정책 위반: 시스템에 치명적이거나 악용될 수 있는 메서드 호출 감지 (" + methodName + ")");
+      }
+    }
+  }
+
+  private void validateLoops(CompilationUnit cu) {
+    // 1. while 무한 루프 검사
+    List<WhileStmt> whileStmts = cu.findAll(WhileStmt.class);
+    for (WhileStmt whileStmt : whileStmts) {
+      if (whileStmt.getCondition().isBooleanLiteralExpr() &&
+          whileStmt.getCondition().asBooleanLiteralExpr().getValue()) {
+        throw new SandboxValidationException("보안 정책 위반: 무한 루프(while(true)) 내재된 코드 감지");
+      }
+    }
+
+    // 2. do-while 무한 루프 검사
+    List<DoStmt> doStmts = cu.findAll(DoStmt.class);
+    for (DoStmt doStmt : doStmts) {
+      if (doStmt.getCondition().isBooleanLiteralExpr() &&
+          doStmt.getCondition().asBooleanLiteralExpr().getValue()) {
+        throw new SandboxValidationException("보안 정책 위반: 무한 루프(do-while(true)) 내재된 코드 감지");
+      }
+    }
+
+    // 3. for 무한 루프 검사 (for(;;))
+    List<ForStmt> forStmts = cu.findAll(ForStmt.class);
+    for (ForStmt forStmt : forStmts) {
+      if (forStmt.getCompare().isEmpty()) {
+        throw new SandboxValidationException("보안 정책 위반: 무조건적인 무한 루프(조회조건 없는 for문) 감지");
+      }
+    }
+  }
+
+  private void validateObjectCreations(CompilationUnit cu) {
+    List<ObjectCreationExpr> creations = cu.findAll(ObjectCreationExpr.class);
+    for (ObjectCreationExpr creation : creations) {
+      String typeName = creation.getType().getNameAsString();
+      if (RESTRICTED_OBJECT_CREATIONS.contains(typeName)) {
+        throw new SandboxValidationException("보안 정책 위반: 사용이 금지된 시스템 환경/네트워크 객체 생성 감지 (" + typeName + ")");
       }
     }
   }
