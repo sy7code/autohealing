@@ -77,6 +77,10 @@ dependencies {
     
     // 7. Spring Boot Actuator (헬스체크 엔드포인트 /actuator/health)
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // 8. Flyway (DB 마이그레이션 형상 관리)
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
 }
 
 tasks.named('bootJar') {
