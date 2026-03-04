@@ -135,6 +135,13 @@ jobs:
           name: production-jar
           path: ./deploy
 
+      # ── 1.5. JAR 파일 경로 동적 추출 ──────────────────────────
+      - name: Find JAR file
+        run: |
+          JAR_PATH=$(find ./deploy -name "*.jar" | grep -v plain | head -n 1)
+          echo "Found JAR at: $JAR_PATH"
+          echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
+
       # ── 2. Azure App Service 배포 ─────────────────────────────
       - name: Deploy to Azure Web App
         id: deploy
@@ -142,7 +149,7 @@ jobs:
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: ./deploy/**/*.jar
+          package: ${{ env.JAR_PATH }}
 
       # ── 3. 배포 후 헬스체크 ───────────────────────────────────
       - name: Health check after deployment
