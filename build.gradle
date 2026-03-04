@@ -1,12 +1,11 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '4.0.2'
+	id 'org.springframework.boot' version '3.4.4'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
 
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
-description = 'Demo project for Spring Boot'
 
 java {
 	toolchain {
@@ -22,26 +21,72 @@ configurations {
 
 repositories {
 	mavenCentral()
+	maven {
+		url "https://packages.atlassian.com/maven-public"
+	}
 }
 
+// Snyk 스캐너가 인식할 수 있도록 연관된 명시적 의존성을 직권으로 올립니다.
 dependencies {
+	// Snyk 관련 Spring Framework 강제 버전 명시 (6.2.11 이상)
+	implementation 'org.springframework:spring-webmvc:6.2.11'
+	implementation 'org.springframework:spring-web:6.2.11'
+	implementation 'org.springframework:spring-beans:6.2.11'
+	implementation 'org.springframework:spring-context:6.2.11'
+	implementation 'org.springframework:spring-core:6.2.11'
+
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-webflux'
 	compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
-	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
-	testImplementation 'org.springframework.boot:spring-boot-starter-webflux-test'
+	// 커스텀 @ConfigurationProperties 메타데이터 생성 (IDE 자동완성 + 경고 해소)
+	annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'com.h2database:h2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구
 	implementation 'com.azure.resourcemanager:azure-resourcemanager:2.34.0'
-	implementation 'com.azure:azure-identity:1.11.0'
+	implementation 'com.azure:azure-identity:1.15.1'
 
 	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
 	runtimeOnly 'org.postgresql:postgresql'
 
+	// 2. GitHub REST API Client (https://github-api.kohsuke.org/)
+	implementation 'org.kohsuke:github-api:1.330'
 
+	// 3. Jira Cloud REST API Client
+	implementation 'com.atlassian.jira:jira-rest-java-client-core:5.2.2'
+	implementation 'io.atlassian.fugue:fugue:4.7.2'
+
+	// 4. Spring Security & JWT (for Dashboard Authentication)
+	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+	testImplementation 'org.springframework.security:spring-security-test'
+	testImplementation 'org.mockito:mockito-core:5.11.0'
+	testImplementation 'org.mockito:mockito-junit-jupiter:5.11.0'
+
+	// 5. Swagger (SpringDoc OpenAPI for API Documentation)
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.5'
+
+	// 6. JavaParser (for strict AST-based AI Code Sandbox Validation)
+	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.25.9'
+    
+    // 7. Spring Boot Actuator (헬스체크 엔드포인트 /actuator/health)
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // 8. Flyway (DB 마이그레이션 형상 관리)
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
 }
+
+tasks.named('bootJar') {
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 
 tasks.named('test') {
 	useJUnitPlatform()

@@ -1,19 +1,91 @@
+# ──────────────────────────────────────────────
+# Flyway DB Migration 설정
+# ──────────────────────────────────────────────
 spring:
   application:
     name: autoHealing
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
   config:
-    import: optional:file:.env[.properties] # name -> application.name으로 경로 수정 추천
-  datasource:
-    # .env 파일에 작성할 변수명과 일치시킵니다
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true # SQL을 예쁘게 출력해줍니다
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+    # .env 파일을 환경변수로 자동 로드합니다 (Spring Boot 2.4+)
+    import: optional:file:.env[.properties]
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+springdoc:
+  swagger-ui:
+    disable-swagger-default-url: true
+
+# ──────────────────────────────────────────────
+# Jira Cloud 연동 설정
+# 실제 값은 .env 파일에서 주입됩니다.
+# ──────────────────────────────────────────────
+jira:
+  host: ${JIRA_HOST}                   # 예: https://your-domain.atlassian.net
+  email: ${JIRA_EMAIL}                 # Jira 계정 이메일
+  api-token: ${JIRA_API_TOKEN}         # Jira API Token
+  project-key: ${JIRA_PROJECT_KEY}     # 프로젝트 키 (예: SCRUM)
+  transition:
+    in-progress: "In Progress"
+    done: "Done"
+  issue:
+    type: "Task"
+
+# Custom Security Settings
+jwt:
+  # Secret key MUST be 256 bits (32 chars) minimum. Can be overridden in .env
+  secret: ${JWT_SECRET:v9y/B?E(H+MbQeThWmZq4t7w!z%C&F)J@NcRfUjXn2r5u8x/A?D(G-KaPdSgVkYp}
+  # Token expiration time in milliseconds (default: 24 hours)
+  expiration: 86400000
+
+admin:
+  # Static admin credentials for dashboard access
+  username: ${ADMIN_USERNAME:admin}
+  password: ${ADMIN_PASSWORD:password123}
+
+# ──────────────────────────────────────────────
+# Auto-Healing Feature Toggle
+#   manual : Jira 티켓 생성만 수행 (기본값)
+#   auto   : 티켓 생성 후 HealingStrategy 자동 실행
+# ──────────────────────────────────────────────
+auto-healing:
+  mode: manual
+
+# ──────────────────────────────────────────────
+# Snyk 연동 설정
+# SNYK_API_TOKEN 은 .env 파일에 추가하세요:
+#   SNYK_API_TOKEN=snyk_xxxxxxxxxxxxx
+# Token 없으면 SnykClient가 Mock 데이터를 반환합니다.
+# ──────────────────────────────────────────────
+snyk:
+  api-token: ${SNYK_API_TOKEN:}
+  org-id: ${SNYK_ORG_ID:}
+  base-url:
+    rest: "https://api.snyk.io/rest"
+    v1: "https://api.snyk.io/v1"
+  api-version: "2024-10-15"
+
+# ──────────────────────────────────────────────
+# Azure 연동 설정
+# ──────────────────────────────────────────────
+azure:
+  subscription-id: ${AZURE_SUBSCRIPTION_ID:}
+  storage-account: ${AZURE_STORAGE_ACCOUNT:autohealing2026}
+
+# ──────────────────────────────────────────────
+# GitHub 및 Jira 상태 변이 설정 (하드코딩 제거 분리)
+# ──────────────────────────────────────────────
+github:
+  pr:
+    # PR 생성 시 타이틀 접두사 및 레이블 관련 설명
+    title-prefix: "[Auto-Healing]"
+    commit-prefix: "fix: "
+    commit-suffix: " by AI"
+    merge-message: "Merged by Auto-Healing System"
+
+# ──────────────────────────────────────────────
+# Discord Webhook 설정
+# ──────────────────────────────────────────────
+discord:
+  webhook-url: ${DISCORD_WEBHOOK_URL}

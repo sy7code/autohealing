@@ -1,0 +1,10 @@
+{
+  "properties": [
+    {
+      "name": "auto-healing.mode",
+      "type": "java.lang.String",
+      "description": "Auto-Healing 실행 모드. 'manual': Jira 티켓 생성만 수행. 'auto': 티켓 생성 후 HealingStrategy 자동 실행.",
+      "defaultValue": "manual"
+    }
+  ]
+}
