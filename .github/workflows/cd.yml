@@ -142,7 +142,7 @@ jobs:
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: ./deploy/*.jar
+          package: ./deploy/**/*.jar
 
       # ── 3. 배포 후 헬스체크 ───────────────────────────────────
       - name: Health check after deployment
