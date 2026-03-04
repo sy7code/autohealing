@@ -36,8 +36,8 @@ jira:
 jwt:
   # Secret key MUST be 256 bits (32 chars) minimum. Can be overridden in .env
   secret: ${JWT_SECRET:v9y/B?E(H+MbQeThWmZq4t7w!z%C&F)J@NcRfUjXn2r5u8x/A?D(G-KaPdSgVkYp}
-  # Token expiration time in milliseconds (default: 24 hours)
-  expiration: 86400000
+  # Token expiration time in milliseconds (default: 1 hour = 3600000 ms)
+  expiration: ${JWT_EXPIRATION:3600000}
 
 admin:
   # Static admin credentials for dashboard access
