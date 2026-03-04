@@ -11,8 +11,8 @@ spring:
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      # 프로덕션에서는 안전을 위해 validate 또는 none을 권장하지만 기능 유지를 위해 update 사용
-      ddl-auto: update
+      # Flyway가 스키마를 관리하므로 DDL 자동 생성 기능을 끄고 검증(validate)만 수행합니다.
+      ddl-auto: validate
     show-sql: false
     properties:
       "[hibernate.format_sql]": false
