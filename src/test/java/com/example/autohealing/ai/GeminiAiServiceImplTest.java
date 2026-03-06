@@ -10,6 +10,7 @@ import org.springframework.web.client.RestTemplate;
 import java.util.List;
 import java.util.Map;
 import org.springframework.core.ParameterizedTypeReference;
+import org.mockito.ArgumentMatchers;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -59,14 +60,11 @@ class GeminiAiServiceImplTest {
                     Map.of("text", validJsonString))))));
     ResponseEntity<Map<String, Object>> responseEntity = ResponseEntity.ok(mockResponseBody);
 
-    @SuppressWarnings("unchecked")
-    ParameterizedTypeReference<Map<String, Object>> typeRef = any(ParameterizedTypeReference.class);
-
     when(restTemplate.exchange(
         any(String.class),
         eq(HttpMethod.POST),
         any(HttpEntity.class),
-        typeRef,
+        ArgumentMatchers.<ParameterizedTypeReference<Map<String, Object>>>any(),
         eq("gemini-1.5-flash"),
         eq("test-api-key"))).thenReturn(responseEntity);
 
@@ -90,14 +88,11 @@ class GeminiAiServiceImplTest {
                     Map.of("text", invalidJsonWithMarkdown))))));
     ResponseEntity<Map<String, Object>> responseEntity = ResponseEntity.ok(mockResponseBody);
 
-    @SuppressWarnings("unchecked")
-    ParameterizedTypeReference<Map<String, Object>> typeRef = any(ParameterizedTypeReference.class);
-
     when(restTemplate.exchange(
         any(String.class),
         eq(HttpMethod.POST),
         any(HttpEntity.class),
-        typeRef,
+        ArgumentMatchers.<ParameterizedTypeReference<Map<String, Object>>>any(),
         eq("gemini-1.5-flash"),
         eq("test-api-key"))).thenReturn(responseEntity);
 
@@ -110,14 +105,11 @@ class GeminiAiServiceImplTest {
 
   @Test
   void testFixCodeApiFailureReturnsOriginalCode() {
-    @SuppressWarnings("unchecked")
-    ParameterizedTypeReference<Map<String, Object>> typeRef = any(ParameterizedTypeReference.class);
-
     when(restTemplate.exchange(
         any(String.class),
         eq(HttpMethod.POST),
         any(HttpEntity.class),
-        typeRef,
+        ArgumentMatchers.<ParameterizedTypeReference<Map<String, Object>>>any(),
         any(String.class),
         any(String.class))).thenThrow(new RuntimeException("API Connection Failed"));
 
