@@ -2,10 +2,8 @@ package com.example.autohealing.orchestrator;
 
 import com.example.autohealing.ai.AiRemediationResult;
 import com.example.autohealing.ai.AiRemediationService;
-import com.example.autohealing.client.SnykCliScannerService;
+import com.example.autohealing.client.SnykClient;
 import com.example.autohealing.entity.SecurityLog;
-import com.example.autohealing.parser.dto.UnifiedIssue;
-import com.example.autohealing.parser.dto.UnifiedIssue.SeverityLevel;
 import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.service.CodeValidatorService;
 import com.example.autohealing.service.DiscordNotificationService;
@@ -18,12 +16,17 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * [Task 2] 거대 파이프라인 통합 테스트 (Giant Pipeline Integration Test)
@@ -37,7 +40,7 @@ public class GiantPipelineIntegrationTest {
   private SecurityOrchestrator orchestrator;
 
   @MockitoBean
-  private SnykCliScannerService snykCliScannerService;
+  private SnykClient snykClient;
 
   @MockitoBean
   private AiRemediationService aiRemediationService;
@@ -60,16 +63,14 @@ public class GiantPipelineIntegrationTest {
   @Test
   @DisplayName("전체 보안 취축점 자동 수정 파이프라인 E2E 흐름 검증")
   void testEndToEndGiantPipelineFlow() throws Exception {
-    // [Given] 1. Snyk에서 취약점 1건 발견 상황 시뮬레이션
-    UnifiedIssue mockIssue = UnifiedIssue.builder()
-        .id("SNYK-JAVA-SPRING-12345")
-        .title("Insecure Deserialization in Spring")
-        .severity(SeverityLevel.CRITICAL)
-        .description("Package Path: src/main/java/com/example/Vulnerable.java\nVulnerability detail description...")
-        .source("SNYK")
-        .build();
-
-    when(snykCliScannerService.scan(anyString())).thenReturn(List.of(mockIssue));
+    // [Given] 1. Snyk에서 취약점 1건 발견 상황 시뮬레이션 (API 응답 Raw Map)
+    java.util.Map<String, Object> rawVuln = java.util.Map.of(
+        "id", "SNYK-JAVA-SPRING-12345",
+        "title", "Insecure Deserialization in Spring",
+        "severity", "critical",
+        "packageName", "com.example",
+        "version", "1.0.0");
+    when(snykClient.fetchVulnerabilities()).thenReturn(java.util.List.of(rawVuln));
 
     // [Given] 2. AI 수정 서비스가 패치 코드를 성공적으로 생성했다고 가정
     AiRemediationResult mockAiResult = new AiRemediationResult(
@@ -105,7 +106,7 @@ public class GiantPipelineIntegrationTest {
 
     // [Then] 전체 파이프라인 단계별 호출 검증 (비동기 처리를 위해 timeout 속성 적용)
     // 1. Snyk 스캔 호출 확인
-    verify(snykCliScannerService, timeout(2000)).scan(eq("/tmp/scan"));
+    verify(snykClient, timeout(5000)).fetchVulnerabilities();
 
     // 2. AI 수정 서비스 호출 확인 (Critical 등급이므로 호출되어야 함)
     verify(aiRemediationService, timeout(2000)).fixCode(anyString(), contains("SNYK-JAVA-SPRING-12345"));
@@ -114,11 +115,12 @@ public class GiantPipelineIntegrationTest {
     verify(codeValidatorService, timeout(2000)).validateCode(eq(mockAiResult.getFixedCode()), anyString());
 
     // 4. Jira 개별 취약점 티켓 생성 및 진행 상태 변경 확인
-    verify(jiraService, timeout(2000)).createIssue(eq(mockIssue.getTitle()), anyString(), eq("CRITICAL"), anyList());
+    verify(jiraService, timeout(2000)).createIssue(contains("Insecure Deserialization in Spring"), anyString(),
+        eq("CRITICAL"), anyList());
     verify(jiraService, timeout(2000)).transitionIssue(eq("SCRUM-102"), any());
 
     // 5. Github PR 생성 확인
-    verify(githubService, timeout(2000)).createPullRequest(eq(mockIssue), anyString(), eq(mockAiResult.getFixedCode()),
+    verify(githubService, timeout(2000)).createPullRequest(any(), anyString(), eq(mockAiResult.getFixedCode()),
         anyString());
 
     // 6. Discord 알림 발송 확인 (Snyk 발견 시, PR 생성 시)

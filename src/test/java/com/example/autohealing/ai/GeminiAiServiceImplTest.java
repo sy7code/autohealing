@@ -2,8 +2,6 @@ package com.example.autohealing.ai;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentMatchers;
-import org.mockito.Mockito;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +9,8 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Map;
+import org.springframework.core.ParameterizedTypeReference;
+import org.mockito.ArgumentMatchers;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -58,13 +58,13 @@ class GeminiAiServiceImplTest {
             Map.of("content", Map.of(
                 "parts", List.of(
                     Map.of("text", validJsonString))))));
-    ResponseEntity<Map> responseEntity = ResponseEntity.ok(mockResponseBody);
+    ResponseEntity<Map<String, Object>> responseEntity = ResponseEntity.ok(mockResponseBody);
 
     when(restTemplate.exchange(
         any(String.class),
         eq(HttpMethod.POST),
         any(HttpEntity.class),
-        eq(Map.class),
+        ArgumentMatchers.<ParameterizedTypeReference<Map<String, Object>>>any(),
         eq("gemini-1.5-flash"),
         eq("test-api-key"))).thenReturn(responseEntity);
 
@@ -86,13 +86,13 @@ class GeminiAiServiceImplTest {
             Map.of("content", Map.of(
                 "parts", List.of(
                     Map.of("text", invalidJsonWithMarkdown))))));
-    ResponseEntity<Map> responseEntity = ResponseEntity.ok(mockResponseBody);
+    ResponseEntity<Map<String, Object>> responseEntity = ResponseEntity.ok(mockResponseBody);
 
     when(restTemplate.exchange(
         any(String.class),
         eq(HttpMethod.POST),
         any(HttpEntity.class),
-        eq(Map.class),
+        ArgumentMatchers.<ParameterizedTypeReference<Map<String, Object>>>any(),
         eq("gemini-1.5-flash"),
         eq("test-api-key"))).thenReturn(responseEntity);
 
@@ -109,7 +109,7 @@ class GeminiAiServiceImplTest {
         any(String.class),
         eq(HttpMethod.POST),
         any(HttpEntity.class),
-        eq(Map.class),
+        ArgumentMatchers.<ParameterizedTypeReference<Map<String, Object>>>any(),
         any(String.class),
         any(String.class))).thenThrow(new RuntimeException("API Connection Failed"));
 

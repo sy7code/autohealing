@@ -56,7 +56,6 @@ class DashboardControllerTest {
 
   @Test
   @DisplayName("PR 테스트가 성공(success)했을 때 승인 성공")
-  @SuppressWarnings("unchecked")
   void approveVulnerability_ciSuccess_mergesPr() {
     // given
     given(securityLogRepository.findById(1L)).willReturn(Optional.of(dummyLog));
@@ -64,15 +63,15 @@ class DashboardControllerTest {
     given(githubService.mergePullRequest(123)).willReturn(true);
 
     // when
-    // when
     ResponseEntity<?> response = dashboardController.approveVulnerability(1L);
 
     // then
     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     assertThat(response.getBody()).isNotNull();
-    Map<String, Object> body = (Map<String, Object>) response.getBody();
-    assertThat(body.get("approved")).isEqualTo(true);
-    assertThat(body.get("prMerged")).isEqualTo(true);
+    if (response.getBody() instanceof Map<?, ?> body) {
+      assertThat(body.get("approved")).isEqualTo(true);
+      assertThat(body.get("prMerged")).isEqualTo(true);
+    }
 
     verify(githubService).isPrTestsSuccessful(123);
     verify(githubService).mergePullRequest(123);

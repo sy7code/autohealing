@@ -2,7 +2,8 @@ package com.example.autohealing.orchestrator;
 
 import com.example.autohealing.ai.AiRemediationService;
 import com.example.autohealing.ai.AiRemediationResult;
-import com.example.autohealing.client.SnykCliScannerService;
+import com.example.autohealing.client.SnykClient;
+import com.example.autohealing.parser.snyk.SnykParserImpl;
 import com.example.autohealing.entity.SecurityLog;
 import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.parser.dto.UnifiedIssue;
@@ -21,6 +22,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * GitHub Webhook 수신 후 2단계 보안 분석 + AI 자동 수정을 오케스트레이션하는 서비스.
@@ -44,7 +46,8 @@ import java.util.List;
 public class SecurityOrchestrator {
 
   private final JiraService jiraService;
-  private final SnykCliScannerService snykCliScannerService;
+  private final SnykClient snykClient;
+  private final SnykParserImpl snykParser;
   private final AiRemediationService aiRemediationService;
   private final GithubService githubService;
   private final CodeValidatorService codeValidatorService;
@@ -85,11 +88,11 @@ public class SecurityOrchestrator {
         저장소  : %s
         커밋 ID : %s
         작성자  : %s
-        스캐너  : Snyk CLI
+        스캐너  : Snyk REST API
         AI 엔진 : %s
         ──────────────────────────────
-        ⏳ Snyk CLI 스캔이 백그라운드에서 실행 중입니다.
-        스캔 완료 후 이 티켓이 자동으로 업데이트됩니다.
+        ⏳ Snyk 보안 분석이 백그라운드에서 실행 중입니다.
+        분석 완료 후 이 티켓이 자동으로 업데이트됩니다.
         """, repoName, commitId, committer, aiRemediationService.providerName());
 
     return jiraService.createIssue(summary, description);
@@ -117,10 +120,13 @@ public class SecurityOrchestrator {
         issueKey, repoName, aiRemediationService.providerName());
 
     try {
-      // A. Snyk CLI 스캔
-      String targetPath = (scanPath != null && !scanPath.isBlank()) ? scanPath : localRepoPath;
-      List<UnifiedIssue> issues = snykCliScannerService.scan(targetPath);
-      log.info("[Orchestrator][Async] CLI 스캔 완료 - 취약점 {}건", issues.size());
+      // A. Snyk REST API 스캔 - 이제 CLI 대신 API를 사용하여 클라우드에서도 작동합니다.
+      log.info("[Orchestrator][Async] Snyk REST API를 통해 취약점 수집 중...");
+      List<Map<String, Object>> rawIssues = snykClient.fetchVulnerabilities();
+      List<UnifiedIssue> issues = rawIssues.stream()
+          .map(snykParser::toUnifiedIssue)
+          .toList();
+      log.info("[Orchestrator][Async] API 스캔 완료 - 취약점 {}건", issues.size());
 
       if (issues.isEmpty()) {
         updateWithNoIssues(issueKey, repoName);
@@ -137,7 +143,7 @@ public class SecurityOrchestrator {
       log.error("[Orchestrator][Async] 오류 발생 - issueKey={}", issueKey, e);
       jiraService.updateIssue(issueKey,
           "[보안 분석 실패] " + repoName,
-          "Snyk CLI 스캔 중 오류: " + e.getMessage());
+          "Snyk 보안 분석 중 오류: " + e.getMessage());
     }
   }
 
@@ -318,22 +324,28 @@ public class SecurityOrchestrator {
    * @return 파일의 원본 내용, 또는 오류 발생 시 에러 메시지(주석 형태)
    */
   private String readSourceFile(UnifiedIssue issue) {
-    if (localRepoPath == null || localRepoPath.isBlank()) {
-      return "// LOCAL_REPO_PATH 미설정\n" + issue.getDescription();
-    }
     String filePath = extractFilePath(issue.getDescription());
     if (filePath == null) {
       return "// 파일 경로 정보 없음\n" + issue.getDescription();
     }
-    try {
-      return Files.readString(Path.of(localRepoPath, filePath));
-    } catch (java.nio.file.InvalidPathException e) {
-      log.warn("[Orchestrator][AI] 잘못된 파일 경로 형식: {}", filePath);
-      return "// 잘못된 파일 경로 형식: " + filePath + "\n" + issue.getDescription();
-    } catch (IOException e) {
-      log.warn("[Orchestrator][AI] 파일 읽기 실패: {}", filePath);
-      return "// 파일 읽기 실패: " + filePath + "\n" + issue.getDescription();
+
+    // 1. 먼저 GitHub API를 통해 원격 코드를 가져옵니다 (클라우드 환경 우선)
+    String remoteCode = githubService.getFileContentAsString(filePath, null);
+    if (remoteCode != null) {
+      log.info("[Orchestrator][Remote] GitHub에서 파일 읽기 성공: {}", filePath);
+      return remoteCode;
     }
+
+    // 2. 실패 시 로컬 파일 시스템에서 시도합니다 (하이브리드 지원)
+    if (localRepoPath != null && !localRepoPath.isBlank()) {
+      try {
+        return Files.readString(Path.of(localRepoPath, filePath));
+      } catch (IOException e) {
+        log.warn("[Orchestrator][Local] 로컬 파일 읽기 실패: {}", filePath);
+      }
+    }
+
+    return "// 소스코드를 가져올 수 없습니다: " + filePath + "\n" + issue.getDescription();
   }
 
   private String buildVulnerabilityInfo(UnifiedIssue issue) {
@@ -345,13 +357,21 @@ public class SecurityOrchestrator {
     if (description == null)
       return null;
     for (String line : description.lines().toList()) {
-      if (line.toLowerCase().startsWith("패키지 경로") || line.toLowerCase().startsWith("file")) {
+      String lowerLine = line.toLowerCase();
+      if (lowerLine.startsWith("패키지 경로") || lowerLine.startsWith("file") || lowerLine.startsWith("파일 경로")) {
         String[] parts = line.split(":", 2);
-        if (parts.length == 2)
-          return parts[1].trim();
+        if (parts.length == 2) {
+          String path = parts[1].trim();
+          // "build.gradle (log4j@2.17.1)" 같은 형식에서 파일명만 추출
+          if (path.contains(" ")) {
+            path = path.split(" ")[0];
+          }
+          return path;
+        }
       }
     }
-    return null;
+    // 의존성 취약점의 경우 기본적으로 build.gradle 리턴 (SnykParser 에서 이미 어느 정도 처리하지만 이중 방어)
+    return "build.gradle";
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -363,7 +383,7 @@ public class SecurityOrchestrator {
     jiraService.updateIssue(
         issueKey,
         "[보안 분석 완료] " + repoName + " - 취약점 없음 ✅",
-        "✅ Snyk CLI 스캔 완료: 감지된 취약점이 없습니다.");
+        "✅ Snyk 보안 분석 완료: 감지된 취약점이 없습니다.");
   }
 
   private void updateWithVulnerabilities(String issueKey, String repoName,
@@ -379,7 +399,7 @@ public class SecurityOrchestrator {
         repoName, issues.size(), critical, high, aiFixedCount);
 
     StringBuilder sb = new StringBuilder();
-    sb.append(String.format("⚠️ Snyk CLI 스캔 완료: %d건 발견\n", issues.size()));
+    sb.append(String.format("⚠️ Snyk 보안 분석 완료: %d건 발견\n", issues.size()));
     sb.append(String.format("🤖 AI(%s) 자동 수정: %d건\n", aiRemediationService.providerName(), aiFixedCount));
     sb.append("──────────────────────────────\n");
     for (int i = 0; i < issues.size(); i++) {

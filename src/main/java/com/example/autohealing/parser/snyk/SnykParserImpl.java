@@ -83,10 +83,10 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Private Helpers
+  // Public Helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  private UnifiedIssue toUnifiedIssue(Map<String, Object> vuln) {
+  public UnifiedIssue toUnifiedIssue(Map<String, Object> vuln) {
     String id = getString(vuln, "id", "SNYK-UNKNOWN");
     String title = getString(vuln, "title", "제목 없음");
     String description = getString(vuln, "description", "");
@@ -97,12 +97,22 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
     // 등급 표준화 (직접 매핑 → 키워드 추론 → 기본값 MEDIUM)
     UnifiedIssue.SeverityLevel severity = severityMapper.map(rawSeverity, title + " " + description);
 
+    // 파일 경로 추출 (Snyk Code는 'file', Open Source는 'from' 배열 등을 활용)
+    String filePath = getString(vuln, "file", null);
+    if (filePath == null) {
+      Object fromArr = vuln.get("from");
+      if (fromArr instanceof List<?> list && !list.isEmpty()) {
+        filePath = "build.gradle";
+      }
+    }
+
     // Jira 티켓 Summary 포맷
     String jiraTitle = String.format("[Snyk][%s] %s (%s@%s)",
         severity.name(), title, packageName, version);
 
     // Jira 티켓 Description 포맷
-    String jiraDescription = buildDescription(id, title, description, packageName, version, rawSeverity, severity);
+    String jiraDescription = buildDescription(id, title, description, packageName, version, rawSeverity, severity,
+        filePath);
 
     return UnifiedIssue.builder()
         .id(id)
@@ -115,12 +125,13 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
 
   private String buildDescription(String id, String title, String description,
       String packageName, String version,
-      String rawSeverity, UnifiedIssue.SeverityLevel severity) {
+      String rawSeverity, UnifiedIssue.SeverityLevel severity, String filePath) {
     return String.format("""
         🔐 Snyk 취약점 감지 보고서
         ──────────────────────────────
         ID          : %s
         제목        : %s
+        파일 경로   : %s
         패키지      : %s @ %s
         원본 등급   : %s
         표준화 등급 : %s
@@ -128,7 +139,9 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
         상세 설명:
         %s
         """,
-        id, title, packageName, version,
+        id, title,
+        filePath != null ? filePath : "(분석 필요)",
+        packageName, version,
         rawSeverity != null ? rawSeverity : "(없음)",
         severity.name(),
         description);
