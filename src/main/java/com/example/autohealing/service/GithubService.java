@@ -2,7 +2,16 @@ package com.example.autohealing.service;
 
 import com.example.autohealing.parser.dto.UnifiedIssue;
 import lombok.extern.slf4j.Slf4j;
-import org.kohsuke.github.*;
+import org.kohsuke.github.GHBranch;
+import org.kohsuke.github.GHCheckRun;
+import org.kohsuke.github.GHContent;
+import org.kohsuke.github.GHPullRequest;
+import org.kohsuke.github.GHRef;
+import org.kohsuke.github.GHRepository;
+import org.kohsuke.github.GitHub;
+import org.kohsuke.github.GitHubBuilder;
+import org.kohsuke.github.HttpException;
+import org.kohsuke.github.PagedIterable;
 import com.example.autohealing.config.GithubConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -221,6 +230,29 @@ public class GithubService {
     } catch (IOException e) {
       log.error("[GitHub API] PR #{} 머지 또는 브랜치 삭제 실패", prNumber, e);
       return false;
+    }
+  }
+
+  /**
+   * GitHub에서 특정 파일의 내용을 읽어와 문자열로 반환합니다.
+   *
+   * @param filePath 파일 경로
+   * @param branch   브랜치 이름 (null 이면 기본 브랜치 사용)
+   * @return 파일 내용 문자열 (실패 시 null)
+   */
+  public String getFileContentAsString(String filePath, String branch) {
+    if (github == null || repoName.isBlank())
+      return null;
+    String targetBranch = (branch != null) ? branch : baseBranch;
+    try {
+      GHRepository repo = github.getRepository(repoName);
+      GHContent content = repo.getFileContent(filePath, targetBranch);
+      try (java.io.InputStream is = content.read()) {
+        return new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+      }
+    } catch (Exception e) {
+      log.warn("[GitHub API] 파일 내용 읽기 실패: {} (branch: {})", filePath, targetBranch);
+      return null;
     }
   }
 

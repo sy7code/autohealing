@@ -2,6 +2,7 @@ package com.example.autohealing.ai;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.web.client.RestTemplate;
 
@@ -82,7 +83,7 @@ public class GeminiAiServiceImpl implements AiRemediationService {
       } catch (Exception jsonEx) {
         log.warn("[GeminiAI] JSON 파싱 실패, Fallback 적용", jsonEx);
         fixedCode = extractCodeFromResponse(rawResponse, "java");
-        explanation = "수정 내역을 파싱하는데 실패했습니다. (원본 응답: " + rawResponse + ")";
+        explanation = "수정 내역을 파싱하는데 실패했습니다.";
         if (fixedCode.isBlank())
           fixedCode = rawResponse;
       }
@@ -116,19 +117,23 @@ public class GeminiAiServiceImpl implements AiRemediationService {
 
     HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
 
-    ResponseEntity<Map> response = restTemplate.exchange(
+    ParameterizedTypeReference<Map<String, Object>> typeRef = new ParameterizedTypeReference<>() {
+    };
+
+    ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
         GEMINI_API_URL,
         HttpMethod.POST,
         request,
-        Map.class,
+        typeRef,
         model, apiKey);
 
-    if (response.getBody() == null) {
+    Map<String, Object> body = response.getBody();
+    if (body == null) {
       throw new IllegalStateException("Gemini API 응답 바디가 비어있습니다.");
     }
 
     // candidates[0].content.parts[0].text 추출
-    List<Map<String, Object>> candidates = (List<Map<String, Object>>) response.getBody().get("candidates");
+    List<Map<String, Object>> candidates = (List<Map<String, Object>>) body.get("candidates");
     Map<String, Object> content = (Map<String, Object>) candidates.get(0).get("content");
     List<Map<String, Object>> parts = (List<Map<String, Object>>) content.get("parts");
     return (String) parts.get(0).get("text");
