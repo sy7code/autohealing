@@ -242,7 +242,7 @@ public class SecurityOrchestrator {
         issue.getTitle(),
         issue.getSeverity().name(),
         isAiFixed ? "AI 패치 대기중" : "수동 리뷰 필요");
-    securityLog.setSnykId(issue.getId());
+    securityLog.setVulnId(issue.getId());
     securityLog.setAiFixed(isAiFixed);
     securityLog.setOriginalCode(originalCode);
     securityLog.setPatchedCode(fixedCode);

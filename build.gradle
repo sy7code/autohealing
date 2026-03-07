@@ -49,6 +49,8 @@ dependencies {
 	// 1. Azure SDK: 에저 리소스를 제어하는 핵심 도구
 	implementation 'com.azure.resourcemanager:azure-resourcemanager:2.34.0'
 	implementation 'com.azure:azure-identity:1.15.1'
+	// Snyk CVE-2024-57699, CVE-2023-1370 (DoS) 취약점 해결을 위한 json-smart 버전 강제 오버라이드
+	implementation 'net.minidev:json-smart:2.5.2'
 
 	// Supabase(PostgreSQL)와 연결하기 위한 필수 드라이버
 	runtimeOnly 'org.postgresql:postgresql'
@@ -75,10 +77,15 @@ dependencies {
 	// 6. JavaParser (for strict AST-based AI Code Sandbox Validation)
 	implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.25.9'
     
-    // 7. Spring Boot Actuator (헬스체크 엔드포인트 /actuator/health)
+	// 7. Spring Boot Actuator (헬스체크 엔드포인트 /actuator/health)
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
-    // 8. Flyway (DB 마이그레이션 형상 관리)
+	// 8. Auto-Healing Plugins & Retry
+	implementation 'com.jayway.jsonpath:json-path:2.9.0'
+	implementation 'org.springframework.retry:spring-retry'
+	implementation 'org.springframework:spring-aspects'
+
+    // 9. Flyway (DB 마이그레이션 형상 관리)
     implementation 'org.flywaydb:flyway-core'
     implementation 'org.flywaydb:flyway-database-postgresql'
 }
