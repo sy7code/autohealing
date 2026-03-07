@@ -84,6 +84,10 @@ dependencies {
 	implementation 'com.jayway.jsonpath:json-path:2.9.0'
 	implementation 'org.springframework.retry:spring-retry'
 	implementation 'org.springframework:spring-aspects'
+
+    // 9. Flyway (DB 마이그레이션 형상 관리)
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
 }
 
 tasks.named('bootJar') {
