@@ -2,7 +2,8 @@ package com.example.autohealing.client;
 
 import com.example.autohealing.entity.PluginConfig;
 import com.example.autohealing.service.EncryptionService;
-import com.jayway.jsonpath.JsonPath;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -16,7 +17,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * DB에 저장된 PluginConfig 정보를 바탕으로 동작하는 범용 API 스캐너.
@@ -29,6 +29,7 @@ public class GenericApiScanner implements SecurityScannerService {
   private final PluginConfig config;
   private final RestTemplate restTemplate;
   private final EncryptionService encryptionService;
+  private final ObjectMapper objectMapper = new ObjectMapper();
 
   public GenericApiScanner(PluginConfig config, RestTemplate restTemplate, EncryptionService encryptionService) {
     this.config = config;
@@ -89,38 +90,101 @@ public class GenericApiScanner implements SecurityScannerService {
   }
 
   /**
-   * JsonPath를 이용해 외부 스캐너의 고유 포맷을 내부 표준 포맷으로 변환합니다.
+   * ObjectMapper를 이용해 외부 스캐너의 고유 포맷을 내부 표준 포맷으로 변환합니다.
+   * JsonPath 대체 로직 적용.
    */
   private List<Map<String, Object>> parseAndMapResults(String jsonResp) {
     try {
-      // JsonPath.read는 List<Map<...>> 형태를 반환한다고 가정
-      List<Map<String, Object>> rawVulns = JsonPath.read(jsonResp, config.getResultJsonPath());
+      JsonNode rootNode = objectMapper.readTree(jsonResp);
+      JsonNode vulnsNode = extractNodeByPath(rootNode, config.getResultJsonPath());
 
-      return rawVulns.stream().map(raw -> {
+      if (vulnsNode == null || !vulnsNode.isArray()) {
+        log.warn("[{}] 결과 배열을 찾을 수 없습니다. JsonPath: {}", providerName(), config.getResultJsonPath());
+        return Collections.emptyList();
+      }
+
+      List<Map<String, Object>> mappedResults = new java.util.ArrayList<>();
+
+      for (JsonNode vulnRaw : vulnsNode) {
         Map<String, Object> standardVuln = new HashMap<>();
 
-        // 식별자: config.getIdField() 기반 파싱
-        Object idObj = JsonPath.read(raw, config.getIdField());
-        standardVuln.put("id", idObj != null ? idObj.toString() : "UNKNOWN_ID");
+        // 식별자
+        JsonNode idNode = extractNodeByPath(vulnRaw, config.getIdField());
+        standardVuln.put("id", (idNode != null && !idNode.isNull()) ? idNode.asText() : "UNKNOWN_ID");
 
-        // 제목: config.getTitleField() 기반 파싱
-        Object titleObj = JsonPath.read(raw, config.getTitleField());
-        standardVuln.put("title", titleObj != null ? titleObj.toString() : "No Title");
+        // 제목
+        JsonNode titleNode = extractNodeByPath(vulnRaw, config.getTitleField());
+        standardVuln.put("title", (titleNode != null && !titleNode.isNull()) ? titleNode.asText() : "No Title");
 
-        // 심각도: config.getSeverityField() 기반 파싱 및 맵핑 적용 대상
-        Object severityObj = JsonPath.read(raw, config.getSeverityField());
-        standardVuln.put("severity", severityObj != null ? severityObj.toString() : "medium"); // TODO:
-                                                                                               // severityMappingJson 연동
+        // 심각도
+        JsonNode severityNode = extractNodeByPath(vulnRaw, config.getSeverityField());
+        standardVuln.put("severity",
+            (severityNode != null && !severityNode.isNull()) ? severityNode.asText() : "medium");
 
         // 스캐너 이름 강제 주입
         standardVuln.put("scannerName", providerName());
 
-        return standardVuln;
-      }).collect(Collectors.toList());
+        mappedResults.add(standardVuln);
+      }
+      return mappedResults;
 
     } catch (Exception e) {
       log.error("[{}] 결과 JSON 파싱 중 오류: {}", providerName(), e.getMessage());
       return Collections.emptyList();
     }
+  }
+
+  /**
+   * 점(.)으로 구분된 간단한 JsonPath 문자열을 기반으로 JsonNode를 탐색합니다.
+   * 예: "data.issues" -> root.path("data").path("issues")
+   */
+  private JsonNode extractNodeByPath(JsonNode root, String pathExpression) {
+    if (root == null || pathExpression == null || pathExpression.isBlank()) {
+      return root;
+    }
+
+    // "$." 로 시작하는 경우 제거
+    if (pathExpression.startsWith("$.")) {
+      pathExpression = pathExpression.substring(2);
+    } else if (pathExpression.startsWith("$")) {
+      pathExpression = pathExpression.substring(1);
+    }
+
+    JsonNode current = root;
+    String[] parts = pathExpression.split("\\.");
+    for (String part : parts) {
+      if (part.isBlank())
+        continue;
+
+      if (part.contains("[") && part.contains("]")) {
+        // 배열 인덱스가 포함된 경우 (예: "items[0]")
+        int bracketStart = part.indexOf('[');
+        int bracketEnd = part.indexOf(']');
+        String propName = part.substring(0, bracketStart);
+        String indexStr = part.substring(bracketStart + 1, bracketEnd);
+
+        if (!propName.isEmpty()) {
+          current = current.path(propName);
+        }
+        if ("*".equals(indexStr)) {
+          // 별표인 경우 우선 그대로 반환 (이 구현에서는 가장 바깥쪽 배열에 사용하는 용도)
+          return current;
+        } else {
+          try {
+            int idx = Integer.parseInt(indexStr);
+            current = current.path(idx);
+          } catch (NumberFormatException e) {
+            // 잘못된 인덱스
+          }
+        }
+      } else {
+        current = current.path(part);
+      }
+
+      if (current.isMissingNode()) {
+        return null;
+      }
+    }
+    return current;
   }
 }
