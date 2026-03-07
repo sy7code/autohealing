@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -32,7 +33,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 @Service
-public class SnykCliScannerService {
+public class SnykCliScannerService implements SecurityScannerService {
 
   private static final String SNYK_CMD = "snyk";
 
@@ -45,6 +46,25 @@ public class SnykCliScannerService {
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
 
+  @Override
+  public String providerName() {
+    return "Snyk-CLI";
+  }
+
+  @Override
+  public List<Map<String, Object>> scan(String repositoryUri) {
+    List<UnifiedIssue> issues = scanUnified(repositoryUri);
+    return issues.stream().map(issue -> {
+      java.util.Map<String, Object> map = new java.util.HashMap<>();
+      map.put("id", issue.getId());
+      map.put("title", issue.getTitle());
+      map.put("severity", issue.getSeverity().name().toLowerCase());
+      map.put("scannerName", providerName());
+      map.put("description", issue.getDescription());
+      return map;
+    }).collect(java.util.stream.Collectors.toList());
+  }
+
   /**
    * 지정된 프로젝트 경로에서 {@code snyk test --json}을 실행하고
    * 취약점 목록을 {@link UnifiedIssue} 리스트로 반환합니다.
@@ -52,7 +72,7 @@ public class SnykCliScannerService {
    * @param projectPath 스캔할 프로젝트 루트 경로. null이면 LOCAL_REPO_PATH 사용.
    * @return 파싱된 취약점 이슈 목록
    */
-  public List<UnifiedIssue> scan(String projectPath) {
+  public List<UnifiedIssue> scanUnified(String projectPath) {
     String targetPath = resolveProjectPath(projectPath);
     if (targetPath == null) {
       log.error("[SnykCLI] 스캔 경로 미설정 - LOCAL_REPO_PATH 또는 파라미터를 지정하세요.");

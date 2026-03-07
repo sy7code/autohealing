@@ -26,7 +26,7 @@ import org.springframework.core.ParameterizedTypeReference;
  */
 @Slf4j
 @Component
-public class SnykClient {
+public class SnykClient implements SecurityScannerService {
 
   // API 설정은 application.yml 에서 주입받습니다.
 
@@ -54,6 +54,16 @@ public class SnykClient {
   // ─────────────────────────────────────────────────────────────────────────
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
+
+  @Override
+  public String providerName() {
+    return "Snyk-REST";
+  }
+
+  @Override
+  public List<Map<String, Object>> scan(String repositoryUri) {
+    return fetchVulnerabilities();
+  }
 
   public List<Map<String, Object>> fetchVulnerabilities() {
     if (snykApiToken == null || snykApiToken.isBlank()) {
