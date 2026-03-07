@@ -29,8 +29,11 @@ public interface SecurityLogRepository extends JpaRepository<SecurityLog, Long> 
   /** Jira Key로 조회 */
   Optional<SecurityLog> findByJiraKey(String jiraKey);
 
-  /** Snyk ID로 조회 */
-  Optional<SecurityLog> findBySnykId(String snykId);
+  /** 식별용 고유 취약점 ID로 조회 */
+  Optional<SecurityLog> findByVulnId(String vulnId);
+
+  /** 여러 취약점 ID를 한번에 조회 (중복 방어용) */
+  List<SecurityLog> findByVulnIdIn(List<String> vulnIds);
 
   /** 최근 순 리스트 (최대 100건) */
   List<SecurityLog> findTop100ByOrderByDetectedAtDesc();

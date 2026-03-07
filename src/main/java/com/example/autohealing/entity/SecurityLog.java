@@ -45,8 +45,17 @@ public class SecurityLog {
 
   // ── Dashboard / Approval용 추가 필드 ──
 
-  /** Snyk 취약점 ID (예: SNYK-JAVA-COMNIMBUSDS-6247633) */
-  private String snykId;
+  /** 식별용 고유 취약점 ID (예: SNYK-xxx, SONAR-xxx) */
+  private String vulnId;
+
+  /** V13 추가: 실행된 스캐너 이름 */
+  private String scannerName;
+
+  /** V13 추가: 수정에 사용된 AI 엔진 이름 */
+  private String aiEngineName;
+
+  /** V13 추가: AI 처리 시간(ms) */
+  private Long processingTimeMs;
 
   /** 연동된 Jira 이슈 키 (예: SCRUM-66) */
   private String jiraKey;
@@ -82,5 +91,18 @@ public class SecurityLog {
     this.threatType = threatType;
     this.severity = severity;
     this.status = status;
+  }
+
+  // v13 DB 방어 메서드 (Setter): 파일 전체를 DB에 밀어 넣으면 500MB 무료 DB가 터집니다.
+  public void setOriginalCode(String code) {
+    this.originalCode = code != null && code.length() > 5000
+        ? code.substring(0, 5000) + "\n...[Truncated (Free DB Limit)]"
+        : code;
+  }
+
+  public void setPatchedCode(String code) {
+    this.patchedCode = code != null && code.length() > 5000
+        ? code.substring(0, 5000) + "\n...[Truncated (Free DB Limit)]"
+        : code;
   }
 }
