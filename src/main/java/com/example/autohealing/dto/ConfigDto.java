@@ -22,5 +22,6 @@ public class ConfigDto {
   private String severityMappingJson;
   private String idField;
   private String modelName;
+  private java.util.Map<String, String> customParams; // v19: 추가 변수 맵핑용
   private boolean enabled = true;
 }

@@ -33,6 +33,7 @@ public class PluginConfig {
   private String severityMappingJson;
   private String idField;
   private String modelName;
+  private String customParamsJson; // v19: 추가 변수(JSON) 저장용
 
   private boolean enabled = true;
 
