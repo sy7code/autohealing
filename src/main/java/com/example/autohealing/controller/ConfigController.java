@@ -24,6 +24,7 @@ public class ConfigController {
   private final PluginConfigRepository pluginConfigRepository;
   private final EncryptionService encryptionService;
   private final org.springframework.web.client.RestTemplate restTemplate;
+  private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Scanners
@@ -124,12 +125,13 @@ public class ConfigController {
         }
       }
 
-      org.springframework.http.HttpEntity<Void> entity = new org.springframework.http.HttpEntity<>(headers);
       org.springframework.http.HttpMethod method = dto.getHttpMethod() != null
           ? org.springframework.http.HttpMethod.valueOf(dto.getHttpMethod())
           : org.springframework.http.HttpMethod.GET;
 
-      ResponseEntity<String> response = restTemplate.exchange(dto.getApiUrl(), method, entity, String.class);
+      org.springframework.http.HttpEntity<Void> entity = new org.springframework.http.HttpEntity<>(headers);
+      String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
+      ResponseEntity<String> response = restTemplate.exchange(finalUrl, method, entity, String.class);
 
       if (response.getStatusCode().is2xxSuccessful()) {
         result.put("success", true);
@@ -164,7 +166,8 @@ public class ConfigController {
 
       org.springframework.http.HttpEntity<java.util.Map<String, Object>> entity = new org.springframework.http.HttpEntity<>(
           requestBody, headers);
-      ResponseEntity<java.util.Map> response = restTemplate.postForEntity(dto.getApiUrl(), entity, java.util.Map.class);
+      String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
+      ResponseEntity<java.util.Map> response = restTemplate.postForEntity(finalUrl, entity, java.util.Map.class);
 
       if (response.getStatusCode().is2xxSuccessful()) {
         result.put("success", true);
@@ -246,7 +249,8 @@ public class ConfigController {
   }
 
   private ConfigDto toDto(PluginConfig entity) {
-    if (entity == null) return null;
+    if (entity == null)
+      return null;
     ConfigDto dto = new ConfigDto();
     dto.setId(entity.getId());
     dto.setName(entity.getName());
@@ -262,6 +266,18 @@ public class ConfigController {
     dto.setIdField(entity.getIdField());
     dto.setModelName(entity.getModelName());
     dto.setEnabled(entity.isEnabled());
+
+    // v19: JSON String -> Map 변환
+    if (entity.getCustomParamsJson() != null && !entity.getCustomParamsJson().isBlank()) {
+      try {
+        dto.setCustomParams(objectMapper.readValue(entity.getCustomParamsJson(),
+            new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, String>>() {
+            }));
+      } catch (Exception e) {
+        log.error("💥 [ConfigController] CustomParams JSON 파싱 에러: ", e);
+      }
+    }
+
     return dto;
   }
 
@@ -279,6 +295,27 @@ public class ConfigController {
     entity.setIdField(dto.getIdField());
     entity.setModelName(dto.getModelName());
     entity.setEnabled(dto.isEnabled());
+
+    // v19: Map -> JSON String 변환
+    if (dto.getCustomParams() != null) {
+      try {
+        entity.setCustomParamsJson(objectMapper.writeValueAsString(dto.getCustomParams()));
+      } catch (Exception e) {
+        log.error("💥 [ConfigController] CustomParams JSON 직렬화 에러: ", e);
+      }
+    }
+
     return entity;
+  }
+
+  private String substitutePlaceholders(String url, java.util.Map<String, String> params) {
+    if (url == null || !url.contains("${") || params == null || params.isEmpty()) {
+      return url;
+    }
+    String result = url;
+    for (java.util.Map.Entry<String, String> entry : params.entrySet()) {
+      result = result.replace("${" + entry.getKey() + "}", entry.getValue());
+    }
+    return result;
   }
 }
