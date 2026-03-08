@@ -41,6 +41,9 @@ class ConfigControllerTest {
   @MockBean
   private com.example.autohealing.config.security.JwtProvider jwtProvider;
 
+  @MockBean
+  private org.springframework.web.client.RestTemplate restTemplate;
+
   @Test
   @DisplayName("스캐너 목록 조회 시 API Key가 마스킹되어 반환된다")
   void getScanners_masksApiKey() throws Exception {
