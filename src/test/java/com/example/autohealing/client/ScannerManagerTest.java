@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.context.ApplicationContext;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.Collections;
@@ -54,6 +55,7 @@ class ScannerManagerTest {
 
     // ScannerManager 초기화
     scannerManager = new ScannerManager(context, configRepository, encryptionService, restTemplate);
+    ReflectionTestUtils.setField(scannerManager, "useStaticDefaults", true);
     scannerManager.init(); // @PostConstruct 트리거
   }
 
