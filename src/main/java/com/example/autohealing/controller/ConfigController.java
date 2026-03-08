@@ -81,17 +81,21 @@ public class ConfigController {
   // ─────────────────────────────────────────────────────────────────────────
 
   private ResponseEntity<List<ConfigDto>> getConfigsByType(PluginConfig.PluginType type) {
-    List<ConfigDto> dtos = pluginConfigRepository.findByPluginType(type).stream().map(config -> {
-      ConfigDto dto = toDto(config);
-      // v7 보안 요건: 조회 시 API 키 마스킹
-      if (config.getApiKeyEncrypted() != null && !config.getApiKeyEncrypted().isBlank()) {
-        String plain = encryptionService.decrypt(config.getApiKeyEncrypted());
-        // "[DECRYPTION_FAILED]" 등 에러 상태도 mask 처리에서 걸러집니다
-        dto.setApiKey(encryptionService.mask(plain));
-      }
-      return dto;
-    }).toList();
-    return ResponseEntity.ok(dtos);
+    try {
+      List<ConfigDto> dtos = pluginConfigRepository.findByPluginType(type).stream().map(config -> {
+        ConfigDto dto = toDto(config);
+        // v7 보안 요건: 조회 시 API 키 마스킹
+        if (config.getApiKeyEncrypted() != null && !config.getApiKeyEncrypted().isBlank()) {
+          String plain = encryptionService.decrypt(config.getApiKeyEncrypted());
+          dto.setApiKey(encryptionService.mask(plain));
+        }
+        return dto;
+      }).toList();
+      return ResponseEntity.ok(dtos);
+    } catch (Exception e) {
+      log.error("💥 [ConfigController] 목록 조회 중 예외 발생 (type={}): ", type, e);
+      return ResponseEntity.internalServerError().build();
+    }
   }
 
   private ResponseEntity<ConfigDto> createConfig(ConfigDto dto) {
@@ -136,6 +140,7 @@ public class ConfigController {
   }
 
   private ConfigDto toDto(PluginConfig entity) {
+    if (entity == null) return null;
     ConfigDto dto = new ConfigDto();
     dto.setId(entity.getId());
     dto.setName(entity.getName());
@@ -143,7 +148,7 @@ public class ConfigController {
     dto.setAuthType(entity.getAuthType());
     dto.setAuthHeaderName(entity.getAuthHeaderName());
     dto.setApiUrl(entity.getApiUrl());
-    dto.setHttpMethod(entity.getHttpMethod());
+    dto.setHttpMethod(entity.getHttpMethod() != null ? entity.getHttpMethod() : "GET");
     dto.setResultJsonPath(entity.getResultJsonPath());
     dto.setTitleField(entity.getTitleField());
     dto.setSeverityField(entity.getSeverityField());
