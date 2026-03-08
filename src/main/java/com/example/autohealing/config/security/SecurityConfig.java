@@ -29,7 +29,8 @@ public class SecurityConfig {
   @Bean
   public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
     http
-        .csrf(csrf -> csrf.ignoringRequestMatchers("/api/auth/**", "/api/webhook/**"))
+        // JWT 기반 Stateless API이므로 CSRF 보호를 전체 /api/** 경로에 대해 비활성화
+        .csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))
         .cors(cors -> cors.configurationSource(corsConfigurationSource()))
         .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(auth -> auth
@@ -37,9 +38,11 @@ public class SecurityConfig {
             .requestMatchers("/api/auth/login").permitAll()
             .requestMatchers("/api/webhook/**").permitAll()
             .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-resources/**").permitAll()
-            // Protected endpoints
+            .requestMatchers("/actuator/**").permitAll()
+            // Protected endpoints (require JWT authentication)
             .requestMatchers("/api/dashboard/**").authenticated()
-            .requestMatchers("/api/vulnerabilities/approve/**").authenticated()
+            .requestMatchers("/api/vulnerabilities/**").authenticated()
+            .requestMatchers("/api/config/**").authenticated()
             // Any other request needs authentication
             .anyRequest().authenticated())
         .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
