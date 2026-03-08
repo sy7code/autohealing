@@ -32,4 +32,31 @@ public class CodeSanitizer {
     // 블록 태그가 없는 경우 양쪽 끝 공백만 제거하여 원문 반환
     return aiOutput.trim();
   }
+
+  // 탐지 패턴: API 키, 토큰, 비밀번호, 하드코딩된 인증 정보
+  private static final java.util.List<Pattern> SENSITIVE_PATTERNS = java.util.List.of(
+      Pattern.compile("(?i)(password|secret|token|api[_-]?key)\\s*[=:]\\s*[\"']?[^\\s\"']+"), // password=xxx, token:
+                                                                                              // xxx
+      Pattern.compile("sk-[a-zA-Z0-9]{20,}"), // OpenAI API key
+      Pattern.compile("ghp_[a-zA-Z0-9]{36}"), // GitHub PAT
+      Pattern.compile("Bearer\\s+[a-zA-Z0-9._\\-]+"), // Bearer tokens
+      Pattern.compile("AIza[a-zA-Z0-9_\\-]{35}"), // Google API key
+      Pattern.compile("xox[bpoa]-[a-zA-Z0-9\\-]+") // Slack token
+  );
+
+  /** AI에게 보내기 전: 민감 정보 제거 */
+  public String sanitizeInput(String code) {
+    String result = code;
+    for (Pattern p : SENSITIVE_PATTERNS) {
+      result = p.matcher(result).replaceAll("[REDACTED]");
+    }
+    return result;
+  }
+
+  /** AI 반환 후: 유출 검증 (가드 포스트) */
+  public boolean containsSensitiveData(String fixedCode) {
+    if (fixedCode == null || fixedCode.isBlank())
+      return false;
+    return SENSITIVE_PATTERNS.stream().anyMatch(p -> p.matcher(fixedCode).find());
+  }
 }
