@@ -120,6 +120,7 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
         .title(jiraTitle)
         .description(jiraDescription)
         .severity(severity)
+        .filePath(filePath)
         .build();
   }
 

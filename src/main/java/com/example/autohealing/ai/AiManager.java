@@ -105,4 +105,22 @@ public class AiManager implements AiRemediationService {
 
     return chain;
   }
+
+  public AiRemediationService getActiveAi() {
+    List<AiRemediationService> engines = buildEngineChain();
+    if (!engines.isEmpty()) {
+      return engines.get(0);
+    }
+    return new AiRemediationService() {
+      @Override
+      public String providerName() {
+        return "None";
+      }
+
+      @Override
+      public AiRemediationResult fixCode(String org, String vuln) {
+        return new AiRemediationResult(org, "No AI Found");
+      }
+    };
+  }
 }

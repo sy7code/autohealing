@@ -48,7 +48,7 @@ class GithubWebhookControllerTest {
     assertThat(response.getBody().get("issueKey")).isEqualTo("TEST-123");
 
     verify(orchestrator).startAnalysis("test-user/test-repo", "12345678", "tester");
-    verify(orchestrator).runSnykScanAndUpdate("TEST-123", "test-user/test-repo");
+    verify(orchestrator).runScanAndUpdate("TEST-123", "test-user/test-repo");
   }
 
   @Test

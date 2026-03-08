@@ -72,7 +72,7 @@ public class GithubWebhookController {
           log.info("[Webhook] 초기 Jira 티켓 생성 완료: {}", issueKey);
 
           // Step 2: 비동기 Snyk 스캔 시작 (별도 스레드, 즉시 반환)
-          orchestrator.runSnykScanAndUpdate(issueKey, repoName);
+          orchestrator.runScanAndUpdate(issueKey, repoName);
 
           ResponseEntity<Map<String, String>> okRes = ResponseEntity.accepted()
               .body(Map.of(

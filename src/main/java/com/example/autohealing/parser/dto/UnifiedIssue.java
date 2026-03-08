@@ -38,6 +38,10 @@ public class UnifiedIssue {
   @lombok.Setter
   private String description;
 
+  /** 스캔된 취약점이 발생한 파일 경로 */
+  @lombok.Setter
+  private String filePath;
+
   /** 표준화된 위험도 등급 */
   private final SeverityLevel severity;
 
@@ -60,5 +64,30 @@ public class UnifiedIssue {
     LOW,
     /** 정보성 */
     INFO
+  }
+
+  public String getFilePath() {
+    if (this.filePath != null && !this.filePath.isBlank()) {
+      return this.filePath;
+    }
+
+    // 만약 filePath가 필드에 없다면 기존 extractFilePath 로직처럼 description에서 우선 추출 시도 (Backward
+    // Compatibility)
+    if (this.description == null)
+      return null;
+    for (String line : this.description.lines().toList()) {
+      String lowerLine = line.toLowerCase();
+      if (lowerLine.startsWith("패키지 경로") || lowerLine.startsWith("file") || lowerLine.startsWith("파일 경로")) {
+        String[] parts = line.split(":", 2);
+        if (parts.length == 2) {
+          String path = parts[1].trim();
+          if (path.contains(" ")) {
+            path = path.split(" ")[0];
+          }
+          return path;
+        }
+      }
+    }
+    return "build.gradle";
   }
 }
