@@ -105,4 +105,19 @@ public class SecurityLog {
         ? code.substring(0, 5000) + "\n...[Truncated (Free DB Limit)]"
         : code;
   }
+
+  // v9 방어: 에러 메시지(explanation) 저장 시 민감한 토큰 마스킹 처리
+  public void setFixExplanation(String explanation) {
+    if (explanation == null) {
+      this.fixExplanation = null;
+      return;
+    }
+    this.fixExplanation = explanation
+        .replaceAll("(?i)(password|secret|token|api[_-]?key)\\s*[=:]\\s*[\"']?[^\\s\"']+", "$1=***")
+        .replaceAll("sk-[a-zA-Z0-9]{20,}", "sk-***")
+        .replaceAll("ghp_[a-zA-Z0-9]{36}", "ghp_***")
+        .replaceAll("Bearer\\s+[a-zA-Z0-9._\\-]+", "Bearer ***")
+        .replaceAll("AIza[a-zA-Z0-9_\\-]{35}", "AIza***")
+        .replaceAll("xox[bpoa]-[a-zA-Z0-9\\-]+", "xox***");
+  }
 }

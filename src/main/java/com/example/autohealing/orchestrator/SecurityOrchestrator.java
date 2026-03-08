@@ -53,6 +53,7 @@ public class SecurityOrchestrator {
   private final JiraConfig jiraConfig;
   private final DiscordNotificationService discordNotificationService;
   private final CodeSanitizer codeSanitizer;
+  private final com.example.autohealing.service.DeduplicationService deduplicationService;
 
   @Value("${VERCEL_URL:http://localhost:3000}")
   private String vercelUrl;
@@ -189,6 +190,11 @@ public class SecurityOrchestrator {
   }
 
   private boolean processSingleVulnerability(String parentIssueKey, String repoName, UnifiedIssue issue) {
+    if (deduplicationService.shouldSkip(issue)) {
+      log.info("[Orchestrator] 중복(Regression 방어 및 어뷰징 방지)으로 인해 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
+      return false;
+    }
+
     boolean isAiFixed = false;
     String fixedCode = "";
     String explanation = "";
