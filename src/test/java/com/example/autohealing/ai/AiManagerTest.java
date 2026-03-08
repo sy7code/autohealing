@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.context.ApplicationContext;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
@@ -67,6 +68,7 @@ class AiManagerTest {
         .thenReturn(Map.of("gemini", mockStaticGemini));
 
     aiManager = new AiManager(context, configRepository, encryptionService, restTemplate, codeSanitizer);
+    ReflectionTestUtils.setField(aiManager, "useStaticDefaults", true);
 
     // when
     AiRemediationResult result = aiManager.fixCode("System.out.println(\"Vuln\");", "Test Vuln");

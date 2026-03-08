@@ -30,6 +30,10 @@ public class AiManager implements AiRemediationService {
   private final RestTemplate restTemplate;
   private final CodeSanitizer codeSanitizer;
 
+  // v17: 내장 AI(Gemini 등) 사용 여부 토글
+  @org.springframework.beans.factory.annotation.Value("${plugin.use-static-defaults:true}")
+  private boolean useStaticDefaults;
+
   public AiManager(ApplicationContext context,
       PluginConfigRepository pluginConfigRepository,
       EncryptionService encryptionService,
@@ -93,13 +97,14 @@ public class AiManager implements AiRemediationService {
     }
 
     // 2. Spring Bean으로 하드코딩된 기본 엔진들 (Gemini 등)
-    Map<String, AiRemediationService> staticBeans = context.getBeansOfType(AiRemediationService.class);
-    for (AiRemediationService service : staticBeans.values()) {
-      // 스스로를 무한 참조하는 것을 차단
-      if (!(service instanceof AiManager)) {
-        // OpenAI Stub은 우선순위를 가장 뒤로 미루거나, Fallback 전용으로 씀. 일단 지금은 정적 Bean은 동적 Bean 뒤에
-        // 배치.
-        chain.add(service);
+    // v17: 설정이 true일 때만 내장 엔진들을 체인에 추가
+    if (useStaticDefaults) {
+      Map<String, AiRemediationService> staticBeans = context.getBeansOfType(AiRemediationService.class);
+      for (AiRemediationService service : staticBeans.values()) {
+        // 스스로를 무한 참조하는 것을 차단
+        if (!(service instanceof AiManager)) {
+          chain.add(service);
+        }
       }
     }
 
