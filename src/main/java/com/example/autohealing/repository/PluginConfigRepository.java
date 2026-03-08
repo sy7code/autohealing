@@ -9,5 +9,7 @@ import java.util.Optional;
 public interface PluginConfigRepository extends JpaRepository<PluginConfig, Long> {
   List<PluginConfig> findByPluginTypeAndEnabledTrue(PluginConfig.PluginType type);
 
+  List<PluginConfig> findByPluginType(PluginConfig.PluginType type);
+
   Optional<PluginConfig> findByName(String name);
 }
