@@ -3,6 +3,7 @@ package com.example.autohealing.parser.snyk;
 import com.example.autohealing.parser.IssueParser;
 import com.example.autohealing.parser.SeverityMapper;
 import com.example.autohealing.parser.dto.UnifiedIssue;
+import com.example.autohealing.common.ScannerConstants;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -93,6 +94,7 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
     String rawSeverity = getString(vuln, "severity", null);
     String packageName = getString(vuln, "packageName", "unknown");
     String version = getString(vuln, "version", "unknown");
+    String scannerName = getString(vuln, "scannerName", ScannerConstants.SOURCE_SNYK); // v10: 출처 감지
 
     // 등급 표준화 (직접 매핑 → 키워드 추론 → 기본값 MEDIUM)
     UnifiedIssue.SeverityLevel severity = severityMapper.map(rawSeverity, title + " " + description);
@@ -106,17 +108,22 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
       }
     }
 
-    // Jira 티켓 Summary 포맷
-    String jiraTitle = String.format("[Snyk][%s] %s (%s@%s)",
-        severity.name(), title, packageName, version);
+    // Jira 티켓 Summary 포맷 (출처에 따라 유동적으로 접두어 설정)
+    String jiraTitle = String.format("[%s][%s] %s",
+        scannerName, severity.name(), title);
+
+    // 코드 관련 메타데이터가 있는 경우에만 괄호 추가
+    if (!"unknown".equals(packageName)) {
+      jiraTitle += String.format(" (%s@%s)", packageName, version);
+    }
 
     // Jira 티켓 Description 포맷
     String jiraDescription = buildDescription(id, title, description, packageName, version, rawSeverity, severity,
-        filePath);
+        filePath, scannerName);
 
     return UnifiedIssue.builder()
         .id(id)
-        .source("SNYK")
+        .source(scannerName)
         .title(jiraTitle)
         .description(jiraDescription)
         .severity(severity)
@@ -126,23 +133,24 @@ public class SnykParserImpl implements IssueParser<Map<String, Object>> {
 
   private String buildDescription(String id, String title, String description,
       String packageName, String version,
-      String rawSeverity, UnifiedIssue.SeverityLevel severity, String filePath) {
+      String rawSeverity, UnifiedIssue.SeverityLevel severity, String filePath, String scannerName) {
     return String.format("""
-        🔐 Snyk 취약점 감지 보고서
+        🛡️ 보안 취약점 감지 보고서 (%s)
         ──────────────────────────────
         ID          : %s
         제목        : %s
         파일 경로   : %s
-        패키지      : %s @ %s
+        컴포넌트    : %s %s
         원본 등급   : %s
         표준화 등급 : %s
         ──────────────────────────────
         상세 설명:
         %s
         """,
+        scannerName,
         id, title,
-        filePath != null ? filePath : "(분석 필요)",
-        packageName, version,
+        filePath != null ? filePath : "(N/A)",
+        packageName, "unknown".equals(version) ? "" : "@ " + version,
         rawSeverity != null ? rawSeverity : "(없음)",
         severity.name(),
         description);

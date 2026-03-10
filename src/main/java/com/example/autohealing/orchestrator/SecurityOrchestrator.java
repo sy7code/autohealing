@@ -19,6 +19,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import com.example.autohealing.common.ScannerConstants;
 import java.util.List;
 import java.util.Map;
 
@@ -192,6 +193,14 @@ public class SecurityOrchestrator {
   private boolean processSingleVulnerability(String parentIssueKey, String repoName, UnifiedIssue issue) {
     if (deduplicationService.shouldSkip(issue)) {
       log.info("[Orchestrator] 중복(Regression 방어 및 어뷰징 방지)으로 인해 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
+      return false;
+    }
+
+    // v10: 인프라 취약점은 AI 수정을 건너뛰고 수동 리뷰 상태로 바로 저장 (CSPM 분리)
+    if (!ScannerConstants.SOURCE_SNYK.equals(issue.getSource())) {
+      log.info("[Orchestrator] 인프라 스캐너({})에서 발견된 이슈이므로 AI 자동 수정을 건너뛰고 수동 리뷰용 알림만 생성합니다. ID={}", issue.getSource(),
+          issue.getId());
+      createTicketsAndPrs(repoName, issue, null, null, "인프라(CSPM) 취약점이므로 수동 설정 변경(Manual Review)이 필요합니다.", false);
       return false;
     }
 
