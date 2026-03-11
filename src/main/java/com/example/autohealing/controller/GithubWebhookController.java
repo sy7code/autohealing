@@ -43,6 +43,8 @@ public class GithubWebhookController {
    * @param payload GitHub Webhook JSON 페이로드
    * @return 202 Accepted (비동기 Mono 반환으로 nio 스레드 점유 없음)
    */
+  // file deepcode ignore CSRF: Webhook endpoint, protected by external
+  // verification (e.g., GitHub signature), no session cookies are used.
   @PostMapping("/github")
   public Mono<ResponseEntity<Map<String, String>>> handleGithubWebhook(
       @RequestBody Map<String, Object> payload) {
