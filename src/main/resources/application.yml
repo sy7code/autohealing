@@ -36,8 +36,8 @@ jira:
 jwt:
   # Secret key MUST be 256 bits (32 chars) minimum. Can be overridden in .env
   secret: ${JWT_SECRET:v9y/B?E(H+MbQeThWmZq4t7w!z%C&F)J@NcRfUjXn2r5u8x/A?D(G-KaPdSgVkYp}
-  # Token expiration time in milliseconds (default: 24 hours)
-  expiration: 86400000
+  # Token expiration time in milliseconds (default: 1 hour = 3600000 ms)
+  expiration: ${JWT_EXPIRATION:3600000}
 
 admin:
   # Static admin credentials for dashboard access
@@ -89,3 +89,12 @@ github:
 # ──────────────────────────────────────────────
 discord:
   webhook-url: ${DISCORD_WEBHOOK_URL}
+
+# ──────────────────────────────────────────────
+# 플러그인 확장 설정 (v17)
+#   use-static-defaults: false 로 설정하면 내장된 Snyk/Gemini 기능을 끄고
+#   DB에 등록된 정보만 사용하도록 강제합니다.
+# ──────────────────────────────────────────────
+plugin:
+  use-static-defaults: ${USE_STATIC_PLUGINS:true}
+  encryption-key: ${PLUGIN_ENCRYPTION_KEY:default-dev-key-1234567890123456}

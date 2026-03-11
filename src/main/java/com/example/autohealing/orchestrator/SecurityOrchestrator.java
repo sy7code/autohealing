@@ -1,8 +1,10 @@
 package com.example.autohealing.orchestrator;
 
-import com.example.autohealing.ai.AiRemediationService;
+import com.example.autohealing.ai.AiManager;
 import com.example.autohealing.ai.AiRemediationResult;
-import com.example.autohealing.client.SnykCliScannerService;
+import com.example.autohealing.ai.CodeSanitizer;
+import com.example.autohealing.client.ScannerManager;
+import com.example.autohealing.parser.snyk.SnykParserImpl;
 import com.example.autohealing.entity.SecurityLog;
 import com.example.autohealing.repository.SecurityLogRepository;
 import com.example.autohealing.parser.dto.UnifiedIssue;
@@ -17,10 +19,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import com.example.autohealing.common.ScannerConstants;
 import java.util.List;
+import java.util.Map;
 
 /**
  * GitHub Webhook 수신 후 2단계 보안 분석 + AI 자동 수정을 오케스트레이션하는 서비스.
@@ -44,16 +45,16 @@ import java.util.List;
 public class SecurityOrchestrator {
 
   private final JiraService jiraService;
-  private final SnykCliScannerService snykCliScannerService;
-  private final AiRemediationService aiRemediationService;
+  private final ScannerManager scannerManager;
+  private final SnykParserImpl snykParser;
+  private final AiManager aiManager;
   private final GithubService githubService;
   private final CodeValidatorService codeValidatorService;
   private final SecurityLogRepository securityLogRepository;
   private final JiraConfig jiraConfig;
   private final DiscordNotificationService discordNotificationService;
-
-  @Value("${LOCAL_REPO_PATH:}")
-  private String localRepoPath;
+  private final CodeSanitizer codeSanitizer;
+  private final com.example.autohealing.service.DeduplicationService deduplicationService;
 
   @Value("${VERCEL_URL:http://localhost:3000}")
   private String vercelUrl;
@@ -85,12 +86,12 @@ public class SecurityOrchestrator {
         저장소  : %s
         커밋 ID : %s
         작성자  : %s
-        스캐너  : Snyk CLI
+        스캐너  : Snyk REST API
         AI 엔진 : %s
         ──────────────────────────────
-        ⏳ Snyk CLI 스캔이 백그라운드에서 실행 중입니다.
-        스캔 완료 후 이 티켓이 자동으로 업데이트됩니다.
-        """, repoName, commitId, committer, aiRemediationService.providerName());
+        ⏳ 통합 보안 스캐너 분석이 백그라운드에서 실행 중입니다.
+        분석 완료 후 이 티켓이 자동으로 업데이트됩니다.
+        """, repoName, commitId, committer, aiManager.getActiveAi().providerName());
 
     return jiraService.createIssue(summary, description);
   }
@@ -104,25 +105,31 @@ public class SecurityOrchestrator {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * 백그라운드에서 Snyk CLI를 통해 코드를 스캔하고, 위험도가 높은 취약점에 대해 AI 수정을 시도합니다.
+   * 백그라운드에서 ScannerManager를 통해 통합 보안 스캔을 실행하고, 위험도가 높은 취약점에 대해 AI 수정을 시도합니다.
    * 처리 후 기존에 생성된 "분석 중" Jira 티켓을 최종 결과로 업데이트합니다.
    *
-   * @param issueKey 단계 1에서 생성된 Jira 티켓 Key
-   * @param repoName 저장소 이름 (티켓 업데이트 시 사용)
-   * @param scanPath 스캔할 로컬 디렉토리 경로 (null인 경우 전역 환경변수 LOCAL_REPO_PATH 사용)
+   * @param issueKey 원본 "분석 중" Jira 티켓 Key
+   * @param repoName 저장소 이름
    */
   @Async("securityTaskExecutor")
-  public void runSnykScanAndUpdate(String issueKey, String repoName, String scanPath) {
+  public void runScanAndUpdate(String issueKey, String repoName) {
     log.info("[Orchestrator][Async] Step2 시작 - issueKey={}, repo={}, aiEngine={}",
-        issueKey, repoName, aiRemediationService.providerName());
+        issueKey, repoName, aiManager.getActiveAi().providerName());
 
     try {
-      // A. Snyk CLI 스캔
-      String targetPath = (scanPath != null && !scanPath.isBlank()) ? scanPath : localRepoPath;
-      List<UnifiedIssue> issues = snykCliScannerService.scan(targetPath);
-      log.info("[Orchestrator][Async] CLI 스캔 완료 - 취약점 {}건", issues.size());
+      // A. 다중 모듈 스캔 연동 (ScannerManager)
+      log.info("[Orchestrator][Async] 스캐너 매니저를 통해 취약점 통합 수집 중...");
+      List<Map<String, Object>> rawIssues = scannerManager.runAllActiveScanners(repoName);
+      // v18: SnykClient를 ScannerManager로 교체하면서 UnifiedIssue 변환을 여기서 수행하거나,
+      // GenericApiScanner가 이미 UnifiedIssue 형식을 Map에 매핑했다면 그대로 파싱합니다.
+      // SnykParserImpl을 활용해 UnifiedIssue로 변환합니다.
 
-      if (issues.isEmpty()) {
+      List<UnifiedIssue> issues = rawIssues.stream()
+          .map(snykParser::toUnifiedIssue)
+          .toList();
+      log.info("[Orchestrator][Async] 통합 스캔 완료 - 취약점 {}건", issues.size());
+
+      if (issues == null || issues.isEmpty()) {
         updateWithNoIssues(issueKey, repoName);
         return;
       }
@@ -137,13 +144,8 @@ public class SecurityOrchestrator {
       log.error("[Orchestrator][Async] 오류 발생 - issueKey={}", issueKey, e);
       jiraService.updateIssue(issueKey,
           "[보안 분석 실패] " + repoName,
-          "Snyk CLI 스캔 중 오류: " + e.getMessage());
+          "보안 분석 중 오류: " + e.getMessage());
     }
-  }
-
-  @Async("securityTaskExecutor")
-  public void runSnykScanAndUpdate(String issueKey, String repoName) {
-    runSnykScanAndUpdate(issueKey, repoName, null);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -189,17 +191,72 @@ public class SecurityOrchestrator {
   }
 
   private boolean processSingleVulnerability(String parentIssueKey, String repoName, UnifiedIssue issue) {
+    if (deduplicationService.shouldSkip(issue)) {
+      log.info("[Orchestrator] 중복(Regression 방어 및 어뷰징 방지)으로 인해 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
+      return false;
+    }
+
+    // v10: 인프라 취약점은 AI 수정을 건너뛰고 수동 리뷰 상태로 바로 저장 (CSPM 분리)
+    if (!ScannerConstants.SOURCE_SNYK.equals(issue.getSource())) {
+      log.info("[Orchestrator] 인프라 스캐너({})에서 발견된 이슈이므로 AI 자동 수정을 건너뛰고 수동 리뷰용 알림만 생성합니다. ID={}", issue.getSource(),
+          issue.getId());
+      createTicketsAndPrs(repoName, issue, null, null, "인프라(CSPM) 취약점이므로 수동 설정 변경(Manual Review)이 필요합니다.", false);
+      return false;
+    }
+
     boolean isAiFixed = false;
     String fixedCode = "";
     String explanation = "";
     String originalCode = "";
 
     try {
-      originalCode = readSourceFile(issue);
+      // v18 방어: 파일 경로 불일치(404) 대응 - 중단하지 않고 스킵
+      try {
+        originalCode = readSourceFile(repoName, issue);
+      } catch (Exception e) {
+        log.warn("[Orchestrator] 파일 경로 불일치로 AI 수정 스킵: {}", issue.getFilePath());
+
+        SecurityLog securityLog = new SecurityLog(repoName, issue.getTitle(), issue.getSeverity().name(),
+            "SKIPPED_FILE_NOT_FOUND");
+        securityLog.setVulnId(issue.getId());
+        securityLogRepository.save(securityLog);
+        return false;
+      }
+
+      // "// 소스코드" 등으로 시작하는 에러 메시지가 리턴된 경우
+      if (originalCode.startsWith("//")) {
+        log.warn("[Orchestrator] 소스 코드를 읽어올 수 없어 스킵: {}", issue.getFilePath());
+        return false;
+      }
+
+      // v18 방어: 무료 티어 AI 출력 토큰 한계(Truncation) 방어로초대형 파일 파괴 방지
+      if (originalCode.length() > 30000) {
+        log.warn("[Orchestrator] 파일이 너무 커서 AI 무료 티어 출력 한계를 초과합니다 (3만자 이상). 안전을 위해 스킵: {}", issue.getFilePath());
+        SecurityLog securityLog = new SecurityLog(repoName, issue.getTitle(), issue.getSeverity().name(),
+            "SKIPPED_TOO_LARGE");
+        securityLog.setVulnId(issue.getId());
+        securityLogRepository.save(securityLog);
+        return false;
+      }
+
       String vulnInfo = buildVulnerabilityInfo(issue);
-      AiRemediationResult result = aiRemediationService.fixCode(originalCode, vulnInfo);
+
+      // v16 1차 방어: 민감 정보 마스킹 (Sanitization)
+      String sanitizedInput = codeSanitizer.sanitizeInput(originalCode);
+
+      AiRemediationResult result = aiManager.getActiveAi().fixCode(sanitizedInput, vulnInfo);
       fixedCode = result.getFixedCode();
       explanation = result.getExplanation();
+
+      // v16 2차 방어: AI 수정 코드에 민감정보가 유출되었는지(환각 등) 강제 검사
+      if (codeSanitizer.containsSensitiveData(fixedCode)) {
+        log.warn("[Orchestrator] ⚠️ AI 수정 코드에 민감정보 탐지! PR 생성 차단됨 - vulnId={}", issue.getId());
+        SecurityLog securityLog = new SecurityLog(repoName, issue.getTitle(), issue.getSeverity().name(),
+            "BLOCKED_SENSITIVE_DATA");
+        securityLog.setVulnId(issue.getId());
+        securityLogRepository.save(securityLog);
+        return false;
+      }
 
       log.info("[Orchestrator][AI] 수정 완료 - id={} ({}자→{}자)",
           issue.getId(), originalCode.length(), fixedCode.length());
@@ -225,6 +282,17 @@ public class SecurityOrchestrator {
       explanation = "AI 자동 수정 중 오류 발생: " + e.getMessage();
     }
 
+    if (isAiFixed) {
+      // v18 방어: Github Anti-Abuse Rate Limit (Secondary Limit) 방어
+      // 로봇이 10초 만에 50개의 PR을 연속으로 생성하면 봇 계정이 영구 정지됩니다. 15초 슬립으로 인간처럼 행동하게 만듭니다.
+      try {
+        log.info("[Orchestrator] 봇 계정 정지(Abuse) 방지를 위한 15초 대기 딜레이 진입...");
+        Thread.sleep(15000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+
     createTicketsAndPrs(repoName, issue, originalCode, fixedCode, explanation, isAiFixed);
     return isAiFixed;
   }
@@ -236,7 +304,7 @@ public class SecurityOrchestrator {
         issue.getTitle(),
         issue.getSeverity().name(),
         isAiFixed ? "AI 패치 대기중" : "수동 리뷰 필요");
-    securityLog.setSnykId(issue.getId());
+    securityLog.setVulnId(issue.getId());
     securityLog.setAiFixed(isAiFixed);
     securityLog.setOriginalCode(originalCode);
     securityLog.setPatchedCode(fixedCode);
@@ -312,28 +380,22 @@ public class SecurityOrchestrator {
   }
 
   /**
-   * 취약점 정보(description)에서 파일 경로를 추출해 로컬 디스크에서 원본 소스코드를 읽어옵니다.
-   *
-   * @param issue 취약점 DTO
-   * @return 파일의 원본 내용, 또는 오류 발생 시 에러 메시지(주석 형태)
+   * 취약점 정보(description)에서 파일 경로를 추출해 서버(GitHub)에서 원본 소스코드를 가져옵니다.
    */
-  private String readSourceFile(UnifiedIssue issue) {
-    if (localRepoPath == null || localRepoPath.isBlank()) {
-      return "// LOCAL_REPO_PATH 미설정\n" + issue.getDescription();
-    }
+  private String readSourceFile(String repoName, UnifiedIssue issue) {
     String filePath = extractFilePath(issue.getDescription());
     if (filePath == null) {
       return "// 파일 경로 정보 없음\n" + issue.getDescription();
     }
-    try {
-      return Files.readString(Path.of(localRepoPath, filePath));
-    } catch (java.nio.file.InvalidPathException e) {
-      log.warn("[Orchestrator][AI] 잘못된 파일 경로 형식: {}", filePath);
-      return "// 잘못된 파일 경로 형식: " + filePath + "\n" + issue.getDescription();
-    } catch (IOException e) {
-      log.warn("[Orchestrator][AI] 파일 읽기 실패: {}", filePath);
-      return "// 파일 읽기 실패: " + filePath + "\n" + issue.getDescription();
+
+    // GitHub API를 통해 원격 코드를 가져옵니다
+    String remoteCode = githubService.getFileContentAsString(filePath, null);
+    if (remoteCode != null) {
+      log.info("[Orchestrator][Remote] GitHub에서 파일 읽기 성공: {}", filePath);
+      return remoteCode;
     }
+
+    return "// 소스코드를 가져올 수 없습니다: " + filePath + "\n" + issue.getDescription();
   }
 
   private String buildVulnerabilityInfo(UnifiedIssue issue) {
@@ -345,13 +407,21 @@ public class SecurityOrchestrator {
     if (description == null)
       return null;
     for (String line : description.lines().toList()) {
-      if (line.toLowerCase().startsWith("패키지 경로") || line.toLowerCase().startsWith("file")) {
+      String lowerLine = line.toLowerCase();
+      if (lowerLine.startsWith("패키지 경로") || lowerLine.startsWith("file") || lowerLine.startsWith("파일 경로")) {
         String[] parts = line.split(":", 2);
-        if (parts.length == 2)
-          return parts[1].trim();
+        if (parts.length == 2) {
+          String path = parts[1].trim();
+          // "build.gradle (log4j@2.17.1)" 같은 형식에서 파일명만 추출
+          if (path.contains(" ")) {
+            path = path.split(" ")[0];
+          }
+          return path;
+        }
       }
     }
-    return null;
+    // 의존성 취약점의 경우 기본적으로 build.gradle 리턴 (SnykParser 에서 이미 어느 정도 처리하지만 이중 방어)
+    return "build.gradle";
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -363,7 +433,7 @@ public class SecurityOrchestrator {
     jiraService.updateIssue(
         issueKey,
         "[보안 분석 완료] " + repoName + " - 취약점 없음 ✅",
-        "✅ Snyk CLI 스캔 완료: 감지된 취약점이 없습니다.");
+        "✅ Snyk 보안 분석 완료: 감지된 취약점이 없습니다.");
   }
 
   private void updateWithVulnerabilities(String issueKey, String repoName,
@@ -379,8 +449,8 @@ public class SecurityOrchestrator {
         repoName, issues.size(), critical, high, aiFixedCount);
 
     StringBuilder sb = new StringBuilder();
-    sb.append(String.format("⚠️ Snyk CLI 스캔 완료: %d건 발견\n", issues.size()));
-    sb.append(String.format("🤖 AI(%s) 자동 수정: %d건\n", aiRemediationService.providerName(), aiFixedCount));
+    sb.append(String.format("⚠️ 통합 보안 분석 완료: %d건 발견\n", issues.size()));
+    sb.append(String.format("🤖 AI(%s) 자동 수정: %d건\n", aiManager.getActiveAi().providerName(), aiFixedCount));
     sb.append("──────────────────────────────\n");
     for (int i = 0; i < issues.size(); i++) {
       UnifiedIssue issue = issues.get(i);

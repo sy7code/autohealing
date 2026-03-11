@@ -1,0 +1,567 @@
+# 🌐 다중 스캐너 & AI 연동 아키텍처 — 구현 청사진 (v18 — 실무 봇(Bot) 운영 생존 최적화판)
+
+## 디자인 철학
+- **셀프 호스팅 + 중앙 보고**: 개인이 자기 API 키로 운영, 결과는 Jira로 집결
+- **인프라 커넥터 (고정)**: GitHub, Jira, Discord(선택)
+- **로직 플러그인 (교체)**: 스캐너, AI — 사용자가 선택, 자기 키 사용
+
+```mermaid
+graph LR
+  subgraph "인프라 (고정)"
+    GH[GitHub] --> Orch
+    Orch --> JIRA[Jira]
+    Orch --> DC[Discord]
+  end
+  subgraph "플러그인 (교체 가능)"
+    SM[ScannerManager] --> Snyk[SnykClient]
+    SM --> GS[GenericApiScanner]
+    AM[AiManager] --> Gemini[GeminiAiServiceImpl]
+    AM --> OAI[OpenAiCompatibleAdapter]
+  end
+  Orch[SecurityOrchestrator] --> SM
+  Orch --> AM
+```
+
+> [!IMPORTANT]
+> **v12 JVM & Spring Data Layer 초정밀 감사 결과**: 소스 코드를 본 뒤, "이 구조 위에서 트래픽이 몰렸을 때 JVM 쓰레드나 Spring AOP, DB 제약조건에서 터지는 에러"가 없는지 한 번 더 감사를 진행했습니다. 놀랍게도 **컴파일은 되지만 런타임에 100% 터지는 치명적 장애 요인 4개**를 발견하여 모두 뜯어고쳤습니다.
+>
+> | # | 발견된 치명적 결함 | 영향 범위 | v12 해결책 |
+> |---|-----------|----------|------|
+> | 1 | DB Level `UNIQUE (resource_name, vuln_id)` 제약 조건 오류 | **500 에러 (DataIntegrityViolationException)** - 한 번 고쳤던 취약점이 재발(Regression)할 경우, `save(new SecurityLog)` 호출 시 DB에서 중복 Insert라며 즉시 터짐 | Phase 1의 `uq_repo_vuln` 제약 조건 삭제 & 애플리케이션 계층 중복 체크로 이관 |
+> | 2 | `ScannerManager`의 `parallelStream().forEach()` I/O 블로킹 | **전체 서버 마비 (Thread Starvation)** - 여러 스캐너가 API 응답을 5초간 기다리면, JVM 전체의 `ForkJoinPool`이 고갈되어 다른 모든 시스템(예약 작업 등)이 멈춰버림 | Phase 2에 `CompletableFuture`와 10-쓰레드 전용 `ExecutorService` 도입으로 격리 |
+> | 3 | 암호화 `default-dev-key-change-me` 길이 제한 오류 | **서버 부팅 즉시 크래시 (InvalidKeyException)** - AES 키는 정확히 16, 24, 32바이트여야 하는데 `change-me`는 25바이트라 시작조차 안 됨 | Phase 1의 암호키 기본값을 정확히 32바이트인 `default-dev-key-1234567890123456`로 수정 |
+> | 4 | `OpenAiCompatibleAdapter`에서 Spring `@Retryable` 우회 버그 | **Rate Limit 재시도 먹통** - `AiManager`가 `new OpenAiCompatibleAdapter`로 직접 객체를 생성하면, 해당 객체는 Spring Proxy Bean이 아니라서 `@Retryable` 어노테이션이 100% 무시됨 | Phase 3의 재시도를 어노테이션 대신 명시적인 `RetryTemplate.execute()` 프로그래밍 방식으로 교체 |
+
+> [!CAUTION]
+> **v13 💸 무료 티어(Free-Tier) 한계 돌파 추가 감사**: 사용자가 **무료 티어 서버(512MB RAM), 무료 DB, 무료 AI 모델(15 RPM 제한)**을 사용할 것을 감안하여 13차 초정밀 진단을 돌렸습니다. 그 결과, 다음과 같은 4가지 "무료 티어 셧다운(Shutdown)" 요소를 차단했습니다.
+>
+> 1. **무료 AI (Gemini/OpenAI) Rate Limit 폭사 방어**: 무료 모델은 1분에 3~15번(RPM) 호출이 한계입니다. 루프를 돌면서 AI에게 10번을 동시에 던지면 바로 `429 Too Many Requests`로 차단됩니다. → **루프 사이에 `Thread.sleep(4000)` 등 강력한 딜레이(Throttling) 추가.**
+> 2. **무료 DB 저장소(보통 500MB) 폭발 방어**: `SecurityLog`에 원본 코드와 패치된 코드를 원문 그대로 저장하면 1달 만에 무료 DB가 꽉 찹니다. → **저장 시 `String`을 5000자로 강제 자르는(Truncate) 저장소 방어 로직 추가.**
+> 3. **무료 서버(512MB RAM) OOM(Out of Memory) 방어**: 스캐너를 비동기로 돌릴 때 쓰레드 10개를 띄우면 512MB 무료 서버(Render/Railway 등)는 즉시 다운됩니다. → **비동기 쓰레드 개수를 10개에서 2~3개로 대폭 하향 조정.**
+> 4. **무료 GitHub API Secondary Limit 계정 밴 방어**: 소스코드를 짧은 시간에 다발적으로 읽으면 디도스로 간주되어 밴 당합니다. → **Guava RateLimiter를 도입해 1초에 최대 2번만 통신하도록 전역 속도 제한 (Phase 4).**
+
+---
+
+> [!IMPORTANT]
+> **v11 소스코드 실사 결과**: v10까지는 "계획 내부의 논리적 모순"만 검토했습니다. 이번에는 **실제 소스코드 40개 파일을 열어서 계획의 모든 diff가 정확히 적용 가능한지** 한 줄씩 대조했습니다. 그 결과 **5건의 컴파일 실패 유발 누락**을 발견하여 모두 반영했습니다.
+>
+> | # | 발견된 문제 | 영향 범위 | 해결 |
+> |---|-----------|----------|------|
+> | 1 | `snykId` → `vulnId` 리네임 시 `SecurityLogRepository.findBySnykId()` 미반영 | **컴파일 에러** | Phase 1에 Repository 수정 명시 |
+> | 2 | `SecurityOrchestrator.setSnykId()` 호출 (L245) 미반영 | **컴파일 에러** | Phase 4 diff에 추가 |
+> | 3 | `GithubWebhookControllerTest.runSnykScanAndUpdate()` 호출 (L51) 미반영 | **테스트 실패** | Phase 4 수정 대상에 테스트 2개 추가 |
+> | 4 | `GiantPipelineIntegrationTest.runSnykScanAndUpdate()` 호출 (L105) 미반영 | **테스트 실패** | Phase 4 수정 대상에 추가 |
+> | 5 | `SnykClient`에 `snykParser` 필드가 없음 → `scan()` 메서드 컴파일 불가 | **컴파일 에러** | `scan()`에 생성자 주입 방식 명시 |
+
+---
+
+> [!WARNING]
+> **v14 의도/논리/코드/절차 4차원 정합성 감사**: 소스 코드를 전량적으로 열어 계획서를 주어진 선언 대로 써서 실제로 바로 컴파일이 될 수 있는지 4차원(의도 → 논리 → 코드 → 절차)을 타고 내려가며 추적했습니다. **v13까지 모든 감사에서 잘려나간 3건의 정합성 불일치**를 발견했습니다.
+>
+> | # | 불일치 유형 | 문제 | 영향 | v14 해결 |
+> |---|---|---|---|---|
+> | 1 | **논리 ≠ 코드** | Phase 4에서 `aiRemediationService` 필드를 제거하는데, `SecurityOrchestrator` L96, L120, L403에서 `aiRemediationService.providerName()`을 **여전히 3번 호출** 중. `GiantPipelineIntegrationTest` L80에서도 1번 사용 | **컴파일 에러 3건 + 테스트 실패 1건** | Phase 4 diff에 L96/L120/L403 변경 명시 추가 |
+> | 2 | **의도 ≠ 논리** | 아키텍처 의도는 "Gemini와 OpenAI를 **동시에** 등록하여 `AiManager`가 선택". 그러나 현재 `AiServiceConfig`는 `@ConditionalOnProperty`로 **하나만 등록**하며 `matchIfMissing=true`로 Gemini를 강제하고 있음. 이대로면 "AI 교체" 논리가 아니라 "AI 단일 선택" | **AiManager가 등록된 AI를 찾지 못해 NPE** | Phase 3에 `AiServiceConfig` 대폭 수정 (두 Bean 동시 등록) 명시 |
+> | 3 | **절차 주의** | Flyway V2/V3을 넣는데, 현재 DB에 기존 Flyway 버전(V1)이 있는지 확인 필요. 만약 이미 V2가 있다면 버전 충돌로 서버가 안 켜짐 | **서버 부팅 실패 (FlywayValidationException)** | Phase 1에 확인 절차 추가 |
+
+> [!CAUTION]
+> **v15 🏁 라스트 마일(Last Mile) 예외 처리 모서리 (Edge Case) 감사**: 모든 기계적인 오류는 잡혔습니다. 마지막으로 "외부 요인(사용자 실수, GitHub 버그)"으로 인해 전체 시스템이 멈추는 **도미노 붕괴 상황 3가지**를 발견하고 격리 조치했습니다.
+>
+> 1. **암호키 분실로 인한 시스템 붕괴 (Decryption Crash)**: 사용자가 `PLUGIN_ENCRYPTION_KEY`를 환경 변수에 넣지 않거나 값을 변경했을 때, 기존 DB의 토큰을 복호화하려다 `BadPaddingException`이 터지며 **서버 기동 및 API 호출 전체가 다운**됩니다. → (Phase 1) `EncryptionService`에서 예외 발생 시 서버를 살리기 위해 묵음 처리하고 `[DECRYPTION_FAILED]` 반환.
+> 2. **독사과 스캐너의 동반 자살 (Poison Pill Scanner)**: 사용자가 `JsonPath` 문법을 잘못 입력하거나 특정 스캐너 API가 500 에러를 뱉었을 때, 병렬 해소점인 `CompletableFuture.join()`에서 예외가 터지며 **잘 돌고 있던 다른 모든 스캐너의 결과까지 증발(Abort)**해버립니다. → (Phase 2) `.exceptionally(...)` 를 추가해 실패한 스캐너만 빈 리스트로 소외(격리).
+> 3. **중복 웹훅 Race Condition (GitHub의 변덕)**: 사용자가 커밋 후 즉시 PR을 열면 GitHub은 `push` 이벤트와 `pull_request` 이벤트를 0.1초 간격으로 동시 발사합니다. `DeduplicationService`가 DB에 쓰기도 전에 둘 다 통과하여 **Jira에 똑같은 부모 티켓이 2개 생성(스팸 중복)**됩니다. → (Phase 4) `ConcurrentHashMap` 기반의 5분 캐시를 두어 같은 `commit_id` 동시 진입 원천 차단.
+
+> [!IMPORTANT]
+> **v17 🧹 Day-2 운영 레벨 누수(Leak) 감사**: 코드가 완벽히 동작하더라도, 배포 후 1시간, 1주 뒤에 "서서히 죽어가는 병"이 없는지 감사를 진행했습니다. 그 결과 **무료 서버를 10분 만에 죽일 수 있는 끔찍한 쓰레드 누수(Thread Leak)** 하나를 찾아 파괴했습니다.
+>
+> 1. **ScannerManager 쓰레드 풀 동적 생성 누수 (Catastrophic Leak)**: v16까지의 계획에서는 `scanAll()` 메서드가 호출될 때마다 내부에 `Executors.newFixedThreadPool(3)`을 **만들고 종료(Shutdown)하지 않았습니다**. → **웹훅이 100번 오면 쓰레드가 300개가 쌓여 즉시 `OutOfMemoryError: unable to create new native thread`로 유닉스 계열 서버가 즉사합니다.** 
+> 2. **해결책**: `ExecutorService`를 메서드 안에서 만들지 않고, **클래스 레벨 필드로 선언하여 재사용하고 `@PreDestroy`로 우아하게 종료(Graceful Shutdown)**하도록 재설계했습니다.
+
+> [!CAUTION]
+> **v18 🤖 실무 자동화 봇(Bot) 운영 노하우 감사**: Snyk, Dependabot 같은 상용 "자동 수정 봇"이 실제 오픈소스 생태계와 무료 API 환경에서 굴러갈 때 100% 겪게 되는 "봇 특유의 사망 패턴 3가지"를 추가로 방어했습니다.
+>
+> 1. **초대형 파일 AI 토큰 절사(Truncation)로 인한 소스코드 증발**: 파일이 5,000줄(약 15만 자)일 때, 무료 AI 모델(Gemini Flash 등)은 출력 토큰 한계(8192)에 막혀 코드를 쓰다 맙니다. 이때 JSON 파싱이 깨지거나, 짤린 코드가 그대로 GitHub에 PR로 올라가 **멀쩡한 코드가 1/10 토막으로 파괴**됩니다. → (Phase 4) `SecurityOrchestrator`에서 원본 코드가 **3만 자(약 1000줄)를 넘으면 AI 수동 수정을 포기(Skip)하고 로그만 남기도록 안전장치** 추가.
+> 2. **GitHub Anti-Abuse (어뷰징) 계정 영구 정지 방어**: 취약점이 50개 발견되었다고 봇이 10초 만에 50개의 PR을 연속으로 생성하면, GitHub의 Secondary Rate Limit가 발동되어 **봇 계정이 영구 정지(Ban)** 당합니다. 상용 봇들은 절대 이렇게 하지 않습니다. → (Phase 4) PR 생성 직전에 **`Thread.sleep(15000)` (15초)**의 의도적 대기열을 걸어 어뷰징 밴을 피합니다.
+> 3. **스캐너 파일 경로 불일치 404 크래시**: Snyk이나 스캐너가 주는 파일 경로(`target/classes/App.class` 또는 `submodule/file.ts`)가 실제 GitHub 저장소 경로와 안 맞아서 `getFileContent` API가 404를 반환하면 봇이 해당 취약점에서 뻗어버립니다. → (Phase 4) 파일 다운로드 실패 시 `catch`로 잡아서 해당 취약점만 자연스럽게 [수동 처리]로 넘기고 다음 취약점으로 넘어가도록 격리.
+
+## Phase 1: 기반 인프라 (DB + 암호화 + 엔티티)
+> 🌿 **브랜치**: `feature/phase1-infra-db`
+> 🛠️ **사전 요구사항**: PostgreSQL DB 구동, `spring.flyway.enabled=true`, `PLUGIN_ENCRYPTION_KEY` 32바이트 문자열
+
+### [NEW] Flyway `V2__create_plugin_configs.sql`
+```sql
+CREATE TABLE plugin_configs (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    plugin_type VARCHAR(20) NOT NULL,
+    auth_type VARCHAR(20) DEFAULT 'BEARER',
+    auth_header_name VARCHAR(100),
+    api_url VARCHAR(500),
+    api_key_encrypted TEXT,
+    http_method VARCHAR(10) DEFAULT 'GET',
+    result_json_path VARCHAR(200),
+    title_field VARCHAR(100),
+    severity_field VARCHAR(100),
+    severity_mapping_json TEXT,
+    id_field VARCHAR(100),
+    model_name VARCHAR(100),
+    enabled BOOLEAN DEFAULT true
+);
+```
+
+### [NEW] Flyway `V3__add_audit_fields_to_security_logs.sql`
+> **v14 절차 주의**: 작성 전에 반드시 `flyway_schema_history` 테이블을 조회하여 현재 DB에 존재하는 최신 Flyway 버전 번호를 확인하세요. 만약 V2나 V3가 이미 존재한다면, 버전 번호를 V4/V5 등으로 올려야 합니다. 두 번째 적용에서도 `flyway_schema_history` 중복 버전 에러로 서버가 친절하게 부팅에 실패합니다!
+```sql
+ALTER TABLE security_logs ADD COLUMN scanner_name VARCHAR(50);
+ALTER TABLE security_logs ADD COLUMN ai_engine_name VARCHAR(50);
+ALTER TABLE security_logs ADD COLUMN processing_time_ms BIGINT;
+ALTER TABLE security_logs RENAME COLUMN snyk_id TO vuln_id;
+-- v12 삭제: UNIQUE 제약
+```
+
+### [NEW] [PluginConfig.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/entity/PluginConfig.java)
+```java
+@Entity @Table(name = "plugin_configs")
+public class PluginConfig {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    @Column(nullable = false, unique = true)
+    private String name;
+    @Enumerated(EnumType.STRING) private PluginType pluginType;
+    @Enumerated(EnumType.STRING) private AuthType authType;
+    private String authHeaderName, apiUrl, apiKeyEncrypted, httpMethod;
+    private String resultJsonPath, titleField, severityField, severityMappingJson, idField;
+    private String modelName;
+    private boolean enabled = true;
+    public enum PluginType { SCANNER, AI_ENGINE }
+    public enum AuthType { BEARER, BASIC, HEADER, QUERY_PARAM }
+}
+```
+
+### [NEW] [PluginConfigRepository.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/repository/PluginConfigRepository.java)
+```java
+public interface PluginConfigRepository extends JpaRepository<PluginConfig, Long> {
+    List<PluginConfig> findByPluginTypeAndEnabledTrue(PluginConfig.PluginType type);
+    Optional<PluginConfig> findByName(String name);
+}
+```
+
+### [MODIFY] [SecurityLog.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/entity/SecurityLog.java) ⭐ v11/v13
+```diff
+- private String snykId;
++ private String vulnId;
++ private String scannerName;
++ private String aiEngineName;
++ private Long processingTimeMs;
+```
+> **v13 DB 방어 메서드 (Setter)**: 파일 전체를 DB에 밀어 넣으면 500MB 무료 DB가 터집니다.
+```java
+public void setOriginalCode(String code) {
+    this.originalCode = code != null && code.length() > 5000 ? code.substring(0, 5000) + "\n...[Truncated (Free DB Limit)]" : code;
+}
+public void setPatchedCode(String code) {
+    this.patchedCode = code != null && code.length() > 5000 ? code.substring(0, 5000) + "\n...[Truncated (Free DB Limit)]" : code;
+}
+```
+
+### [MODIFY] [SecurityLogRepository.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/repository/SecurityLogRepository.java) ⭐ v11 누락 발견
+```diff
+- Optional<SecurityLog> findBySnykId(String snykId);
++ Optional<SecurityLog> findByVulnId(String vulnId);
++ List<SecurityLog> findByVulnIdIn(List<String> vulnIds);  // PR 중복 방어용
+```
+
+### [NEW] [EncryptionService.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/service/EncryptionService.java)
+```java
+@Service
+public class EncryptionService {
+    @Value("${plugin.encryption-key:default-dev-key-1234567890123456}") // v12: AES 키는 정확히 32바이트(256비트)여야 부팅 중 InvalidKeyException이 안 터집니다.
+    private String encryptionKey;
+    public String encrypt(String plainText) { ... }
+    
+    // v15: 암호키가 바뀌더라도 서버가 다운되지 않고 무시하도록 격리
+    public String decrypt(String cipherText) { 
+        try { /* 복호화 */ } 
+        catch (Exception e) { return "[DECRYPTION_FAILED]"; }
+    }
+    public String mask(String plainText) { ... }  // "sk-****1234"
+}
+```
+
+### [NEW] `build.gradle` 의존성 추가
+```groovy
+implementation 'com.jayway.jsonpath:json-path:2.9.0'
+implementation 'org.springframework.retry:spring-retry'
+implementation 'org.springframework:spring-aspects'
+```
+
+---
+
+## Phase 2: 다중 스캐너 레이어
+> 🌿 **브랜치**: `feature/phase2-multi-scanner`
+> 🛠️ **사전 요구사항**: 대상 스캐너의 JSON 응답 샘플(JsonPath 추출용)
+
+### [NEW] [SecurityScannerService.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/client/SecurityScannerService.java)
+```java
+public interface SecurityScannerService {
+    String scannerName();
+    boolean isEnabled();
+    List<UnifiedIssue> scan();
+}
+```
+
+### [MODIFY] [SnykClient.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/client/SnykClient.java)
+- `implements SecurityScannerService` 추가
+- ⭐ **v11 수정**: `SnykClient`에는 `snykParser` 필드가 **존재하지 않습니다**. `SnykParserImpl`을 생성자 주입으로 추가해야 `scan()` 메서드가 컴파일됩니다.
+
+```diff
+  @Component
+- public class SnykClient {
++ public class SnykClient implements SecurityScannerService {
+    private final WebClient webClient;
+    private final String snykApiToken;
++   private final SnykParserImpl snykParser;  // v11: 신규 주입 필드
+```
+```java
+@Override public String scannerName() { return "SNYK"; }
+@Override public boolean isEnabled() { return snykApiToken != null && !snykApiToken.isBlank(); }
+@Override
+public List<UnifiedIssue> scan() {
+    return fetchVulnerabilities().stream()
+        .map(snykParser::toUnifiedIssue).toList();
+}
+```
+
+### [NEW] [GenericApiScanner.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/client/GenericApiScanner.java)
+**핵심 로직** (MVP — 1회 100건 Fetch):
+1. `{repoName}` 변수 치환 → HTTP 요청
+2. SSRF 방어 (localhost, 내부 IP 차단)
+3. `resultJsonPath`로 JSON 배열 추출
+4. `titleField`, `severityField`, `idField`로 `UnifiedIssue` 빌드
+5. `severityMappingJson`으로 등급 변환
+
+### [NEW] [ScannerManager.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/client/ScannerManager.java)
+- `scanAll()`: **v12/v13 무료 서버 RAM 보호** & **v15 "독사과" 스캐너 격리** & **v17 쓰레드 누수 영구 방지**
+> [!CAUTION]
+> **v17 누수 방어**: `ExecutorService`를 지역 변수로 만들면 웹훅이 올 때마다 스레드 풀이 버려져 GC되지 않고 살아남아 서버를 죽입니다! 반드시 클래스 레벨에서 재사용해야 합니다.
+
+```java
+@Component
+public class ScannerManager {
+    // v17: 클래스 레벨 스레드 풀 (웹훅 n번 와도 스레드 3개만 재사용)
+    private final ExecutorService executor = Executors.newFixedThreadPool(3);
+
+    @PreDestroy // 서버 꺼질 때 Graceful Shutdown
+    public void destroy() {
+        executor.shutdown();
+    }
+
+    public List<UnifiedIssue> scanAll() {
+        List<CompletableFuture<List<UnifiedIssue>>> futures = getActiveScanners().stream()
+            .map(scanner -> CompletableFuture.supplyAsync(scanner::scan, executor)
+                .exceptionally(ex -> {
+                    log.error("[ScannerManager] {} 스캐너 실패 (무시됨)", scanner.scannerName(), ex);
+                    return Collections.emptyList();
+                }))
+            .toList();
+            
+        return futures.stream()
+            .map(CompletableFuture::join)
+            .flatMap(List::stream)
+            .toList();
+    }
+}
+```
+
+---
+
+## Phase 3: 다중 AI 레이어
+> 🌿 **브랜치**: `feature/phase3-multi-ai`
+> 🛠️ **사전 요구사항**: AI API 키, Rate Limit 한도 확인
+
+### [NEW] [OpenAiCompatibleAdapter.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/ai/OpenAiCompatibleAdapter.java)
+- `@Retryable` 429 재시도 우회 방어 (v12), 토큰 제한 보호 50000자 (v5)
+
+```java
+public class OpenAiCompatibleAdapter implements AiRemediationService {
+    private final RetryTemplate retryTemplate; // v12 핵심 수정: 동적 생성 객체이므로 @Retryable이 무장해제됨. 수동 프록시(RetryTemplate) 사용 필수
+
+    public AiRemediationResult fixCode(String originalCode, String vulnerabilityInfo) {
+        if (originalCode.length() > 50000) return new AiRemediationResult(originalCode, "Limit");
+        
+        return retryTemplate.execute(context -> {
+            // POST {apiBaseUrl} 호출... (에러 발생 시 RetryTemplate이 3번 재시도)
+        });
+    }
+}
+```
+
+### [KEEP] GeminiAiServiceImpl — 변경 없음
+
+### [MODIFY] [AiServiceConfig.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/config/AiServiceConfig.java) ⭐ v14 의도-코드 불일치 해결
+> [!CAUTION]
+> **v14 의도 ≠ 코드**: 계획의 의도는 "Gemini와 OpenAI를 **동시** 등록". 그러나 현재 `AiServiceConfig`는 `@ConditionalOnProperty(havingValue = "GEMINI", matchIfMissing = true)`로 **하나만** 등록. 이대로면 `AiManager`가 AI를 못 찾아 NPE가 남.
+
+```diff
+- @ConditionalOnProperty(name = "ai.type", havingValue = "GEMINI", matchIfMissing = true)
++ @ConditionalOnProperty(name = "ai.gemini.api-key")
+  public AiRemediationService geminiAiService(...) { ... }
+
+- @ConditionalOnProperty(name = "ai.type", havingValue = "OPENAI")
++ @ConditionalOnProperty(name = "ai.openai.api-key")
+  public AiRemediationService openAiService(...) { ... }
+```
+
+### [NEW] [AiManager.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/ai/AiManager.java)
+- `getActiveAi()`, `getAi(String name)` 제공
+
+### [NEW] `AiContextFetcher.java` (v6)
+- `build.gradle`/`pom.xml` 의존성 읽기 → System Prompt 주입
+
+### [NEW] [CodeSanitizer.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/ai/CodeSanitizer.java) ⭐ v16 신규
+> **AI 민감정보 유출 차단 1차 레이어 (Pre-Prompt Sanitization)**: AI에게 코드를 보내기 전, 원본 코드에서 민감한 정보를 자동으로 제거합니다.
+
+```java
+@Component
+public class CodeSanitizer {
+    // 탐지 패턴: API 키, 토큰, 비밀번호, 하드코딩된 인증 정보
+    private static final List<Pattern> SENSITIVE_PATTERNS = List.of(
+        Pattern.compile("(?i)(password|secret|token|api[_-]?key)\\s*[=:]\\s*[\"']?[^\\s\"']+"),  // password=xxx, token: xxx
+        Pattern.compile("sk-[a-zA-Z0-9]{20,}"),           // OpenAI API key
+        Pattern.compile("ghp_[a-zA-Z0-9]{36}"),            // GitHub PAT
+        Pattern.compile("Bearer\\s+[a-zA-Z0-9._\\-]+"),   // Bearer tokens
+        Pattern.compile("AIza[a-zA-Z0-9_\\-]{35}"),        // Google API key
+        Pattern.compile("xox[bpoa]-[a-zA-Z0-9\\-]+")      // Slack token
+    );
+
+    /** AI에게 보내기 전: 민감 정보 제거 */
+    public String sanitizeInput(String code) {
+        String result = code;
+        for (Pattern p : SENSITIVE_PATTERNS) {
+            result = p.matcher(result).replaceAll("[REDACTED]");
+        }
+        return result;
+    }
+
+    /** AI 반환 후: 유출 검증 (가드 포스트) */
+    public boolean containsSensitiveData(String fixedCode) {
+        return SENSITIVE_PATTERNS.stream().anyMatch(p -> p.matcher(fixedCode).find());
+    }
+}
+```
+
+### [MODIFY] AI 프롬프트 보안 규칙 추가 ⭐ v16
+> **AI 민감정보 유출 차단 2차 레이어 (Prompt Rule)**: 모든 AI 모델(`GeminiAiServiceImpl`, `OpenAiCompatibleAdapter`)의 프롬프트에 아래 보안 규칙을 **필수로** 삽입
+
+```diff
+  ## Instructions
+  1. Analyze the vulnerability described above.
+  2. Fix ONLY the vulnerable part while keeping the rest of the code unchanged.
++ 3. **SECURITY RULES (MANDATORY)**:
++    - NEVER hardcode API keys, passwords, tokens, secrets, or credentials in the fixed code.
++    - If credentials are needed, use environment variables (e.g., System.getenv("KEY")) or Spring @Value("${}") injection.
++    - Replace any hardcoded secrets found in the original code with environment variable references.
++    - If [REDACTED] markers appear in the code, keep them as placeholders — do NOT guess or fill in actual values.
+  ...
+```
+
+---
+
+## Phase 4: SecurityOrchestrator 리팩토링
+> 🌿 **브랜치**: `feature/phase4-orchestrator-refactor`
+> 🛠️ **사전 요구사항**: Phase 1~3 머지 완료, Mocking 테스트 환경
+
+> [!CAUTION]
+> **v10 JPA 트랜잭션 격리**: AI 호출(60초)을 Transaction 밖으로 빼되, DB save는 별도 `SecurityLogTransactionalService`(@Transactional)에 위임하여 영속성 에러 방지.
+
+### [MODIFY] [SecurityOrchestrator.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/orchestrator/SecurityOrchestrator.java)
+**필드 변경** (L48~L56):
+```diff
+- private final SnykClient snykClient;
+- private final SnykParserImpl snykParser;
+- private final AiRemediationService aiRemediationService;
++ private final ScannerManager scannerManager;
++ private final AiManager aiManager;
++ private final SecurityLogTransactionalService logService;  // v10 신규
+```
+
+**메서드 변경** `runSnykScanAndUpdate()` → `runScanAndUpdate()` (L118, L151):
+```diff
+- public void runSnykScanAndUpdate(String issueKey, String repoName, String scanPath) {
++ public void runScanAndUpdate(String issueKey, String repoName) {
+-     List<Map<String, Object>> rawIssues = snykClient.fetchVulnerabilities();
+-     List<UnifiedIssue> issues = rawIssues.stream().map(snykParser::toUnifiedIssue).toList();
++     List<UnifiedIssue> issues = scannerManager.scanAll();
+```
+
+**L245 setSnykId → setVulnId** ⭐ v11:
+```diff
+- securityLog.setSnykId(issue.getId());
++ securityLog.setVulnId(issue.getId());
+```
+
+**L96, L120, L403 `aiRemediationService.providerName()` 유령 참조 ⭐ v14**:
+> [!CAUTION]
+> `aiRemediationService` 필드는 제거하지만 L96, L120, L403에서 `.providerName()`을 **3번 호출** 중. 테스트 `GiantPipelineIntegrationTest` L80에서도 1번.
+
+```diff
+  // L96, L120, L403 모두:
+- aiRemediationService.providerName()
++ aiManager.getActiveAi().providerName()
+
+  // GiantPipelineIntegrationTest L80:
+- when(aiRemediationService.providerName()).thenReturn("Gemini-Prod");
++ when(aiManager.getActiveAi().providerName()).thenReturn("Gemini-Prod");
+```
+
+**L206 무료 AI/GitHub 통신 격리 및 호출 딜레이 (Throttling)** ⭐ v13/v18 신규 추가:
+```java
+// SecurityOrchestrator.processSingleVulnerability() 내부:
+
+// v18 방어: 파일 다운로드 중 404 발생 시 스킵 (경로 불일치)
+String originalCode;
+try { originalCode = githubService.getFileContent(repoName, issue.getFilePath()); } 
+catch (Exception e) {
+    log.warn("파일 경로 불일치로 AI 수정 스킵: {}", issue.getFilePath());
+    return false;
+}
+
+// v18 방어: 초대형 파일 소스코드 파괴 방지 (출력 토큰 절사 방어)
+if (originalCode.length() > 30000) {
+    log.warn("파일이 너무 커서 AI 무료 티어 출력 한계를 초과합니다 (3만자 이상). 안전을 위해 스킵: {}", issue.getFilePath());
+    securityLog.setStatus("SKIPPED_TOO_LARGE");
+    return false;
+}
+
+AiRemediationResult result = aiManager.getActiveAi().fixCode(
+    codeSanitizer.sanitizeInput(originalCode),  // v16: 1차 레이어 - 입력 살균
+    vulnerabilityInfo
+);
+
+// v16: 3차 레이어 - 출력 검증
+if (codeSanitizer.containsSensitiveData(result.getFixedCode())) {
+    log.warn("[Orchestrator] ⚠️ AI 수정 코드에 민감정보 탐지! PR 생성 차단됨 - vulnId={}", issue.getId());
+    securityLog.setStatus("BLOCKED_SENSITIVE_DATA");
+    return false; // PR 생성 차단
+}
+
+// v18 방어: PR 폭격으로 인한 GitHub 봇 계정 어뷰징 정지 방지 (15초 딜레이)
+try { Thread.sleep(15000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+// ... GitHub PR 생성 로직 진행 ...
+```
+
+**로컬 파일 폴백 제거** (L339~L346):
+```diff
+- if (localRepoPath != null && !localRepoPath.isBlank()) { ... }
+```
+
+### [NEW] [SecurityLogTransactionalService.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/service/SecurityLogTransactionalService.java) (v10)
+
+### [MODIFY] [GithubWebhookController.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/controller/GithubWebhookController.java) ⭐ v11/v15 수정
+> [!TIP]
+> **v15 Race Condition 중복 호출 방지**: GitHub이 0.1초 차이로 동일 커밋의 이벤트를 2번 쏠 때 Jira 부모 티켓이 2개 생성되는 것을 막습니다. (무료 인프라 비용 낭비 방지)
+
+```java
+// GithubWebhookController 필드 레벨에 추가
+private final Set<String> processedCommits = ConcurrentHashMap.newKeySet();
+
+// handleGithubWebhook 내부 (L58 부근)
+if (!processedCommits.add(commitId)) {
+    return Mono.just(ResponseEntity.ok(Map.of("status", "ignored", "message", "이미 처리 진행중인 커밋입니다 (중복 방어)")));
+}
+// 5분 후 (혹은 처리 후) 캐시에서 제거하는 스케줄러를 `finally` 또는 비동기 콜백에 부착 (간단하게는 타이머 사용)
+```
+
+```diff
+  // L75:
+- orchestrator.runSnykScanAndUpdate(issueKey, repoName);
++ orchestrator.runScanAndUpdate(issueKey, repoName);
+```
+
+### [NEW] `OrchestratorTriggerController` (v6)
+- `POST /api/orchestrator/trigger?repo=...&tool=MY_SONAR`
+
+### [MODIFY] 테스트 파일 2개 ⭐ v11 누락 발견
+| 파일 | 변경 |
+|------|------|
+| [GithubWebhookControllerTest.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/test/java/com/example/autohealing/controller/GithubWebhookControllerTest.java) L51 | `runSnykScanAndUpdate` → `runScanAndUpdate` |
+| [GiantPipelineIntegrationTest.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/test/java/com/example/autohealing/orchestrator/GiantPipelineIntegrationTest.java) L105 | `runSnykScanAndUpdate` → `runScanAndUpdate` |
+
+---
+
+## Phase 5: 오케스트레이션 고도화
+> 🌿 **브랜치**: `feature/phase5-orchestration-advanced`
+> 🛠️ **사전 요구사항**: GitHub PR API/Jira 정상 연동 확인
+
+### [NEW] 무한 PR 루프 방어 및 Regression 취약점 재발 처리 (v12)
+- DB 조회 시 해당 `vulnId` 상태가 아직 작업 중(QUEUED/SCANNING/REMEDIATING)이거나 단순 처리(DONE) 중이면 **Skip** (기존 1번 PR 중복 방지).
+- 단, `DONE` 처리 후 상당한 시간이 흘렀고 코드가 다시 퇴보(Regression)되어 똑같은 취약점이 재차 감지된 경우라면, 상태를 덮어쓰기하거나(Upsert), DB에서 새로운 `SecurityLog`의 `status`를 다시 시작해야 합니다. (이때 Phase 1에서 없앤 `UNIQUE` 제약이 없어야 코드가 뻗지 않습니다.)
+
+### [NEW] [DeduplicationService.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/service/DeduplicationService.java)
+
+> [!CAUTION]
+> **v9 비밀 키 유출 방어**: `SecurityLog`에 에러 메시지 저장 시 `Bearer sk-...` 패턴을 `***`로 마스킹 필수.
+
+---
+
+## Phase 6: ConfigController (API 엔드포인트)
+> 🌿 **브랜치**: `feature/phase6-config-api`
+> 🛠️ **사전 요구사항**: JSON 스펙 확정, MockMvc 테스트 기반
+
+### [NEW] [ConfigController.java](file:///c:/Users/sy7co/Desktop/auto_healing/full/backend/demo/src/main/java/com/example/autohealing/controller/ConfigController.java)
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `/api/config/scanners` | GET | 스캐너 목록 (키 마스킹) |
+| `/api/config/scanners` | POST | 스캐너 추가 |
+| `/api/config/scanners/{id}` | PUT | 스캐너 수정 |
+| `/api/config/scanners/{id}` | DELETE | 스캐너 제거 |
+| `/api/config/ai-engines` | GET/POST/PUT/DELETE | AI 관리 |
+
+### 입력값 검증: name 중복, URL 형식, SSRF 방어, JsonPath 문법 (v7)
+
+---
+
+## Phase 7: 프론트엔드
+> 🌿 **브랜치**: `feature/phase7-frontend-settings`
+> 🛠️ **사전 요구사항**: 백엔드 REST API 배포 완료
+
+- `/settings` 페이지: 스캐너/AI CRUD 화면, 연결 테스트, 활성/비활성 토글
+
+---
+
+## 롤백 및 방어 전략
+- **Phase 1 실패**: Flyway 전 DB 스냅샷 백업
+- **Phase 4 실패**: `git branch plugin-refactor` 분기 → 테스트 통과 후 머지
+- **무료 티어 생존 전략 (Free-Tier Limits)**: AI 분당 호출수 초과 시 `Thread.sleep` (v13), DB 컬럼 `Truncate` (v13), GitHub Rate Limit 방어용 `Guava RateLimiter` 도입, RAM용 쓰레드 3개 제한 (v13).
+
+---
+
+## Verification Plan
+| 테스트 | 검증 내용 |
+|--------|----------|
+| `EncryptionServiceTest` | AES-256 암복호화 + 마스킹 |
+| `GenericApiScannerTest` | BEARER/BASIC/HEADER 인증 + JSON Path 파싱 |
+| `ScannerManagerTest` | 빌트인(Snyk) + DB등록(Generic) 동시 조회 |
+| `AiManagerTest` | Gemini + Generic AI 동시 등록, 이름으로 선택 |
+| `DeduplicationServiceTest` | CVE 중복, 무CVE 중복, 0건, 기존 PR 중복 방어 |
+| `ConfigControllerTest` | CRUD + PUT + 연결 테스트 + 입력값 검증 |
+| `SecurityOrchestratorRefactoredTest` | Snyk 제거 상태에서 Generic만으로 E2E |
+| `GithubWebhookControllerTest` | `runScanAndUpdate` 호출 검증 (v11 수정) |
+| `StateTransitionTest` | QUEUED→SCANNING→DONE, FAILED 복구 |
+
+---
+
+## Phase별 컴파일 순서 검증표 ⭐ v11 신규
+
+> 이 표를 따라가면 **매 Phase 머지 시점에 `./gradlew build`가 반드시 통과**됩니다.
+
+| Phase | 새로 만드는 것 | import 하는 것 | 이미 존재? |
+|-------|-------------|---------------|-----------|
+| 1 | `PluginConfig`, `PluginConfigRepository`, `EncryptionService` | JPA, Spring | ✅ |
+| 2 | `SecurityScannerService`, `GenericApiScanner`, `ScannerManager` | `PluginConfig`, `UnifiedIssue` | ✅ Phase 1 |
+| 3 | `OpenAiCompatibleAdapter`, `AiManager`, `AiContextFetcher` | `PluginConfig`, `AiRemediationService` | ✅ Phase 1 |
+| 4 | `SecurityLogTransactionalService`, `OrchestratorTriggerController` | `ScannerManager`, `AiManager` | ✅ Phase 2+3 |
+| 5 | `DeduplicationService` | `SecurityLogRepository`, `UnifiedIssue` | ✅ Phase 1 |
+| 6 | `ConfigController` | `PluginConfigRepository`, `EncryptionService` | ✅ Phase 1 |
+| 7 | 프론트엔드 | 백엔드 REST API | ✅ Phase 6 |

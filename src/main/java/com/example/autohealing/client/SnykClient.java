@@ -11,6 +11,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import org.springframework.core.ParameterizedTypeReference;
 
 /**
  * Snyk 클라이언트 (REST v3 + v1 혼합 전략).
@@ -25,7 +26,7 @@ import java.util.Map;
  */
 @Slf4j
 @Component
-public class SnykClient {
+public class SnykClient implements SecurityScannerService {
 
   // API 설정은 application.yml 에서 주입받습니다.
 
@@ -54,7 +55,16 @@ public class SnykClient {
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
 
-  @SuppressWarnings("unchecked")
+  @Override
+  public String providerName() {
+    return "Snyk-REST";
+  }
+
+  @Override
+  public List<Map<String, Object>> scan(String repositoryUri) {
+    return fetchVulnerabilities();
+  }
+
   public List<Map<String, Object>> fetchVulnerabilities() {
     if (snykApiToken == null || snykApiToken.isBlank()) {
       log.warn("[SnykClient] SNYK_API_TOKEN 미설정 → Mock 데이터 반환");
@@ -98,7 +108,8 @@ public class SnykClient {
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
           .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
           .retrieve()
-          .bodyToMono(Map.class)
+          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
+          })
           .block();
 
       if (response == null)
@@ -138,7 +149,8 @@ public class SnykClient {
               "severities", List.of("critical", "high", "medium"),
               "types", List.of("vuln"))))
           .retrieve()
-          .bodyToMono(Map.class)
+          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
+          })
           .block();
 
       if (response == null)
