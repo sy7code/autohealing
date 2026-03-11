@@ -24,6 +24,8 @@ public class ConfigController {
 
   private final PluginConfigRepository pluginConfigRepository;
   private final EncryptionService encryptionService;
+  private final org.springframework.web.client.RestTemplate restTemplate;
+  private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Scanners
@@ -75,6 +77,113 @@ public class ConfigController {
   @DeleteMapping("/ai-engines/{id}")
   public ResponseEntity<Void> deleteAiEngine(@PathVariable Long id) {
     return deleteConfig(id, PluginConfig.PluginType.AI_ENGINE);
+  }
+
+  @PostMapping("/test")
+  public ResponseEntity<java.util.Map<String, Object>> testConnection(@RequestBody ConfigDto dto) {
+    log.info("📡 [ConfigController] 연동 테스트 시작: {} (type={})", dto.getName(), dto.getPluginType());
+    java.util.Map<String, Object> result = new java.util.HashMap<>();
+
+    try {
+      String apiKey = dto.getApiKey();
+      // 만약 마스킹된 키가 넘어왔고 ID가 있다면 DB에서 실제 키를 가져와 복호화함
+      if (apiKey != null && apiKey.contains("****") && dto.getId() != null) {
+        apiKey = pluginConfigRepository.findById(dto.getId())
+            .map(PluginConfig::getApiKeyEncrypted)
+            .map(encryptionService::decrypt)
+            .orElse("");
+      }
+
+      if (dto.getPluginType() == PluginConfig.PluginType.SCANNER) {
+        return testScannerConnection(dto, apiKey);
+      } else if (dto.getPluginType() == PluginConfig.PluginType.AI_ENGINE) {
+        return testAiConnection(dto, apiKey);
+      }
+
+      result.put("success", false);
+      result.put("message", "알 수 없는 플러그인 타입입니다.");
+      return ResponseEntity.badRequest().body(result);
+
+    } catch (Exception e) {
+      log.error("💥 [ConfigController] 연동 테스트 중 에러: ", e);
+      result.put("success", false);
+      result.put("message", "오류 발생: " + e.getMessage());
+      return ResponseEntity.status(500).body(result);
+    }
+  }
+
+  private ResponseEntity<java.util.Map<String, Object>> testScannerConnection(ConfigDto dto, String apiKey) {
+    java.util.Map<String, Object> result = new java.util.HashMap<>();
+    try {
+      org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+      if (apiKey != null && !apiKey.isBlank()) {
+        if (dto.getAuthType() == PluginConfig.AuthType.BEARER) {
+          headers.setBearerAuth(apiKey);
+        } else if (dto.getAuthType() == PluginConfig.AuthType.HEADER) {
+          headers.set(dto.getAuthHeaderName() != null ? dto.getAuthHeaderName() : "Authorization", apiKey);
+        } else if (dto.getAuthType() == PluginConfig.AuthType.BASIC) {
+          headers.setBasicAuth("", apiKey);
+        }
+      }
+
+      org.springframework.http.HttpMethod method = dto.getHttpMethod() != null
+          ? org.springframework.http.HttpMethod.valueOf(dto.getHttpMethod())
+          : org.springframework.http.HttpMethod.GET;
+
+      org.springframework.http.HttpEntity<Void> entity = new org.springframework.http.HttpEntity<>(headers);
+      String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
+      ResponseEntity<String> response = restTemplate.exchange(finalUrl, method, entity, String.class);
+
+      if (response.getStatusCode().is2xxSuccessful()) {
+        result.put("success", true);
+        result.put("message", "연동 성공! (상태 코드: " + response.getStatusCode() + ")");
+        return ResponseEntity.ok(result);
+      } else {
+        result.put("success", false);
+        result.put("message", "연동 실패 (상태 코드: " + response.getStatusCode() + ")");
+        return ResponseEntity.ok(result);
+      }
+    } catch (Exception e) {
+      result.put("success", false);
+      result.put("message", "연결 실패: " + e.getMessage());
+      return ResponseEntity.ok(result);
+    }
+  }
+
+  private ResponseEntity<java.util.Map<String, Object>> testAiConnection(ConfigDto dto, String apiKey) {
+    java.util.Map<String, Object> result = new java.util.HashMap<>();
+    try {
+      org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+      headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+      if (apiKey != null && !apiKey.isBlank()) {
+        headers.setBearerAuth(apiKey);
+      }
+
+      java.util.Map<String, Object> requestBody = new java.util.HashMap<>();
+      requestBody.put("model", dto.getModelName() != null ? dto.getModelName() : "gpt-4o");
+      requestBody.put("messages", java.util.List.of(
+          java.util.Map.of("role", "user", "content", "ping")));
+      requestBody.put("max_tokens", 5);
+
+      org.springframework.http.HttpEntity<java.util.Map<String, Object>> entity = new org.springframework.http.HttpEntity<>(
+          requestBody, headers);
+      String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
+      ResponseEntity<java.util.Map> response = restTemplate.postForEntity(finalUrl, entity, java.util.Map.class);
+
+      if (response.getStatusCode().is2xxSuccessful()) {
+        result.put("success", true);
+        result.put("message", "AI 엔진 연동 성공!");
+        return ResponseEntity.ok(result);
+      } else {
+        result.put("success", false);
+        result.put("message", "AI 엔진 연동 실패 (상태 코드: " + response.getStatusCode() + ")");
+        return ResponseEntity.ok(result);
+      }
+    } catch (Exception e) {
+      result.put("success", false);
+      result.put("message", "AI 연결 실패: " + e.getMessage());
+      return ResponseEntity.ok(result);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -141,7 +250,8 @@ public class ConfigController {
   }
 
   private ConfigDto toDto(PluginConfig entity) {
-    if (entity == null) return null;
+    if (entity == null)
+      return null;
     ConfigDto dto = new ConfigDto();
     dto.setId(entity.getId());
     dto.setName(entity.getName());
@@ -157,6 +267,18 @@ public class ConfigController {
     dto.setIdField(entity.getIdField());
     dto.setModelName(entity.getModelName());
     dto.setEnabled(entity.isEnabled());
+
+    // v19: JSON String -> Map 변환
+    if (entity.getCustomParamsJson() != null && !entity.getCustomParamsJson().isBlank()) {
+      try {
+        dto.setCustomParams(objectMapper.readValue(entity.getCustomParamsJson(),
+            new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, String>>() {
+            }));
+      } catch (Exception e) {
+        log.error("💥 [ConfigController] CustomParams JSON 파싱 에러: ", e);
+      }
+    }
+
     return dto;
   }
 
@@ -174,6 +296,27 @@ public class ConfigController {
     entity.setIdField(dto.getIdField());
     entity.setModelName(dto.getModelName());
     entity.setEnabled(dto.isEnabled());
+
+    // v19: Map -> JSON String 변환
+    if (dto.getCustomParams() != null) {
+      try {
+        entity.setCustomParamsJson(objectMapper.writeValueAsString(dto.getCustomParams()));
+      } catch (Exception e) {
+        log.error("💥 [ConfigController] CustomParams JSON 직렬화 에러: ", e);
+      }
+    }
+
     return entity;
+  }
+
+  private String substitutePlaceholders(String url, java.util.Map<String, String> params) {
+    if (url == null || !url.contains("${") || params == null || params.isEmpty()) {
+      return url;
+    }
+    String result = url;
+    for (java.util.Map.Entry<String, String> entry : params.entrySet()) {
+      result = result.replace("${" + entry.getKey() + "}", entry.getValue());
+    }
+    return result;
   }
 }

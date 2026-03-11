@@ -67,12 +67,12 @@ public class GenericApiScanner implements SecurityScannerService {
       }
 
       // 2. 외부 API 호출
-      // SSRF 방어를 위해 향후 URL 유효성 검사 등 부트로직 추가 필요
+      String finalUrl = substitutePlaceholders(config.getApiUrl());
       HttpEntity<String> entity = new HttpEntity<>(headers);
       HttpMethod method = HttpMethod.valueOf(config.getHttpMethod());
 
-      log.debug("[{}] API 호출: {} {}", providerName(), method, config.getApiUrl());
-      ResponseEntity<String> response = restTemplate.exchange(config.getApiUrl(), method, entity, String.class);
+      log.debug("[{}] API 호출: {} {}", providerName(), method, finalUrl);
+      ResponseEntity<String> response = restTemplate.exchange(finalUrl, method, entity, String.class);
 
       if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
         log.error("[{}] API 호출 실패. 상태코드: {}", providerName(), response.getStatusCode());
@@ -186,5 +186,29 @@ public class GenericApiScanner implements SecurityScannerService {
       }
     }
     return current;
+  }
+
+  /**
+   * URL 내의 ${key} 형식을 customParamsJson의 값으로 치환합니다.
+   */
+  private String substitutePlaceholders(String url) {
+    if (url == null || !url.contains("${") || config.getCustomParamsJson() == null
+        || config.getCustomParamsJson().isBlank()) {
+      return url;
+    }
+
+    try {
+      Map<String, String> params = objectMapper.readValue(config.getCustomParamsJson(),
+          new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {
+          });
+      String result = url;
+      for (Map.Entry<String, String> entry : params.entrySet()) {
+        result = result.replace("${" + entry.getKey() + "}", entry.getValue());
+      }
+      return result;
+    } catch (Exception e) {
+      log.warn("[{}] URL 치환 중 오류 발생 (무시하고 원본 사용): {}", providerName(), e.getMessage());
+      return url;
+    }
   }
 }

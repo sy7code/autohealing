@@ -33,6 +33,10 @@ public class ScannerManager {
   // v12: 병렬 실행을 위한 공유 ThreadPool, v13: Graceful Shutdown을 위해 필드 보관
   private ExecutorService executorService;
 
+  // v17: 내장 스캐너(Snyk 등) 사용 여부 토글
+  @org.springframework.beans.factory.annotation.Value("${plugin.use-static-defaults:true}")
+  private boolean useStaticDefaults;
+
   // Spring Bean으로 등록된 정적 스캐너 (예: 기존 SnykClient)
   private List<SecurityScannerService> staticScanners;
 
@@ -78,7 +82,12 @@ public class ScannerManager {
    * 등록된 모든 활성 스캐너(정적 + 동적)를 병렬로 실행하여 결과를 취합합니다.
    */
   public List<Map<String, Object>> runAllActiveScanners(String repositoryUri) {
-    List<SecurityScannerService> activeScanners = new ArrayList<>(staticScanners);
+    List<SecurityScannerService> activeScanners = new ArrayList<>();
+
+    // v17: 설정이 true일 때만 내장(정적) 스캐너 추가
+    if (useStaticDefaults) {
+      activeScanners.addAll(staticScanners);
+    }
 
     // 1. DB에서 동적 스캐너(SaaS 플러그인) 로드
     List<PluginConfig> activeDynamicConfigs = pluginConfigRepository
