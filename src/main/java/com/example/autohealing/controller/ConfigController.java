@@ -19,6 +19,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/config")
 @RequiredArgsConstructor
+// file deepcode ignore CSRF: API is stateless and uses JWTs for authentication.
 public class ConfigController {
 
   private final PluginConfigRepository pluginConfigRepository;
