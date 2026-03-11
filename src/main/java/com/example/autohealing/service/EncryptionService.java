@@ -7,8 +7,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.Base64;
 
 @Service
@@ -16,6 +18,9 @@ public class EncryptionService {
 
   private static final Logger log = LoggerFactory.getLogger(EncryptionService.class);
   private static final String ALGORITHM = "AES";
+  private static final String TRANSFORMATION = "AES/GCM/NoPadding";
+  private static final int GCM_IV_LENGTH = 12;
+  private static final int GCM_TAG_LENGTH = 128;
 
   // V12: AES 키는 정확히 32바이트(256비트)여야 부팅 중 InvalidKeyException이 안 터집니다.
   @Value("${plugin.encryption-key:default-dev-key-1234567890123456}")
@@ -38,10 +43,20 @@ public class EncryptionService {
     if (plainText == null || plainText.isBlank())
       return null;
     try {
-      Cipher cipher = Cipher.getInstance(ALGORITHM);
-      cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec);
+      byte[] iv = new byte[GCM_IV_LENGTH];
+      new SecureRandom().nextBytes(iv);
+
+      Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+      GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+      cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec, parameterSpec);
+      
       byte[] encryptedBytes = cipher.doFinal(plainText.getBytes(StandardCharsets.UTF_8));
-      return Base64.getEncoder().encodeToString(encryptedBytes);
+      
+      byte[] combinedBytes = new byte[iv.length + encryptedBytes.length];
+      System.arraycopy(iv, 0, combinedBytes, 0, iv.length);
+      System.arraycopy(encryptedBytes, 0, combinedBytes, iv.length, encryptedBytes.length);
+      
+      return Base64.getEncoder().encodeToString(combinedBytes);
     } catch (Exception e) {
       log.error("암호화 중 오류 발생", e);
       throw new RuntimeException("Encryption failed", e);
@@ -52,10 +67,19 @@ public class EncryptionService {
     if (cipherText == null || cipherText.isBlank())
       return null;
     try {
-      Cipher cipher = Cipher.getInstance(ALGORITHM);
-      cipher.init(Cipher.DECRYPT_MODE, secretKeySpec);
       byte[] decodedBytes = Base64.getDecoder().decode(cipherText);
-      byte[] decryptedBytes = cipher.doFinal(decodedBytes);
+      if (decodedBytes.length < GCM_IV_LENGTH) {
+        throw new IllegalArgumentException("Invalid cipherText length");
+      }
+      
+      byte[] iv = new byte[GCM_IV_LENGTH];
+      System.arraycopy(decodedBytes, 0, iv, 0, GCM_IV_LENGTH);
+      
+      Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+      GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+      cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, parameterSpec);
+      
+      byte[] decryptedBytes = cipher.doFinal(decodedBytes, GCM_IV_LENGTH, decodedBytes.length - GCM_IV_LENGTH);
       return new String(decryptedBytes, StandardCharsets.UTF_8);
     } catch (Exception e) {
       // v15 "Last Mile": 암호키 불일치, DB 데이터 손상 시 서버가 죽지 않도록 격리 (묵음 처리)

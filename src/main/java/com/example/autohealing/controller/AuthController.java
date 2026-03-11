@@ -14,6 +14,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/auth")
 @Tag(name = "Auth API", description = "Endpoints for login and obtaining JWT tokens")
+// file deepcode ignore CSRF: Stateless API using JWT/Token authentication, no session cookies are used.
 public class AuthController {
 
   private final JwtProvider jwtProvider;
@@ -29,8 +30,6 @@ public class AuthController {
   }
 
   @Operation(summary = "Admin Login", description = "Verifies the admin credentials and returns a JWT token.")
-  // file deepcode ignore CSRF: Stateless API using JWT/Token authentication, no
-  // session cookies are used.
   @PostMapping("/login")
   public ResponseEntity<?> login(@RequestBody LoginRequest loginRequest) {
     if (adminUsername.equals(loginRequest.getUsername()) && adminPassword.equals(loginRequest.getPassword())) {
