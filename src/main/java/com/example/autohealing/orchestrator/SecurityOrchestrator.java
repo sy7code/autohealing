@@ -365,12 +365,12 @@ public class SecurityOrchestrator {
         jiraService.transitionIssue(jiraKey, jiraConfig.getTransition().getInProgress());
         explanation += "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey;
       }
-      Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+      Integer prNumber = githubService.createPullRequest(repoName, issue, originalCode, fixedCode, explanation);
       if (prNumber != null) {
         securityLog.setPrNumber(prNumber);
         securityLogRepository.save(securityLog);
 
-        String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+        String prUrl = "https://github.com/" + repoName + "/pull/" + prNumber;
         discordNotificationService.sendPrCreatedAlert(
             "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
             prUrl,
@@ -389,7 +389,7 @@ public class SecurityOrchestrator {
     }
 
     // GitHub API를 통해 원격 코드를 가져옵니다
-    String remoteCode = githubService.getFileContentAsString(filePath, null);
+    String remoteCode = githubService.getFileContentAsString(repoName, filePath, null);
     if (remoteCode != null) {
       log.info("[Orchestrator][Remote] GitHub에서 파일 읽기 성공: {}", filePath);
       return remoteCode;

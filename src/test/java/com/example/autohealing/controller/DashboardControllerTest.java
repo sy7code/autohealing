@@ -59,8 +59,9 @@ class DashboardControllerTest {
   void approveVulnerability_ciSuccess_mergesPr() {
     // given
     given(securityLogRepository.findById(1L)).willReturn(Optional.of(dummyLog));
-    given(githubService.isPrTestsSuccessful(123)).willReturn(true);
-    given(githubService.mergePullRequest(123)).willReturn(true);
+    given(githubService.isPrTestsSuccessful(null, 123)).willReturn(true);
+    given(githubService.mergePullRequest(null, 123)).willReturn(true);
+    given(githubService.getDefaultRepoName()).willReturn("test/repo");
 
     // when
     ResponseEntity<?> response = dashboardController.approveVulnerability(1L);
@@ -73,8 +74,8 @@ class DashboardControllerTest {
       assertThat(body.get("prMerged")).isEqualTo(true);
     }
 
-    verify(githubService).isPrTestsSuccessful(123);
-    verify(githubService).mergePullRequest(123);
+    verify(githubService).isPrTestsSuccessful(null, 123);
+    verify(githubService).mergePullRequest(null, 123);
   }
 
   @Test
@@ -82,7 +83,7 @@ class DashboardControllerTest {
   void approveVulnerability_ciFailure_rejectsMerge() {
     // given
     given(securityLogRepository.findById(1L)).willReturn(Optional.of(dummyLog));
-    given(githubService.isPrTestsSuccessful(123)).willReturn(false);
+    given(githubService.isPrTestsSuccessful(null, 123)).willReturn(false);
 
     // when
     ResponseEntity<?> response = dashboardController.approveVulnerability(1L);
@@ -92,8 +93,8 @@ class DashboardControllerTest {
     assertThat(response.getBody()).isNotNull();
     assertThat((String) response.getBody()).contains("CI 테스트가 아직 진행 중이거나 실패했습니다. 잠시 후 다시 시도해주세요.");
 
-    verify(githubService).isPrTestsSuccessful(123);
+    verify(githubService).isPrTestsSuccessful(null, 123);
     // 머지는 호출되지 않아야 함
-    verify(githubService, never()).mergePullRequest(anyInt());
+    verify(githubService, never()).mergePullRequest(org.mockito.ArgumentMatchers.anyString(), anyInt());
   }
 }

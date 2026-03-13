@@ -62,10 +62,11 @@ public class SnykClient implements SecurityScannerService {
 
   @Override
   public List<Map<String, Object>> scan(String repositoryUri) {
-    return fetchVulnerabilities();
+    // repositoryUri: "sy7code/auto-healing-demo" 형식으로 들어옵니다.
+    return fetchVulnerabilities(repositoryUri);
   }
 
-  public List<Map<String, Object>> fetchVulnerabilities() {
+  public List<Map<String, Object>> fetchVulnerabilities(String repositoryUri) {
     if (snykApiToken == null || snykApiToken.isBlank()) {
       log.warn("[SnykClient] SNYK_API_TOKEN 미설정 → Mock 데이터 반환");
       return mockVulnerabilities();
@@ -76,13 +77,13 @@ public class SnykClient implements SecurityScannerService {
     }
 
     try {
-      // Step1: REST v3로 프로젝트 목록 조회
-      List<String> projectIds = fetchProjectIds();
+      // Step1: REST v3로 프로젝트 목록 조회 (현재 레포지토리 이름으로 필터링)
+      List<String> projectIds = fetchProjectIds(repositoryUri);
       if (projectIds.isEmpty()) {
-        log.warn("[SnykClient] 프로젝트 없음 - orgId={}", snykOrgId);
-        return mockVulnerabilities(); // 프로젝트 없으면 Mock으로 대체
+        log.warn("[SnykClient] 일치하는 프로젝트 없음 - repoUri={}, orgId={}", repositoryUri, snykOrgId);
+        return Collections.emptyList(); // 실제 환경에서는 결과 없음으로 처리
       }
-      log.info("[SnykClient] 프로젝트 {}개 발견", projectIds.size());
+      log.info("[SnykClient] 대상 레포지토리 관련 프로젝트 {}개 발견", projectIds.size());
 
       // Step2: 각 프로젝트 이슈 수집 (v1 endpoint)
       return projectIds.stream()
@@ -100,8 +101,9 @@ public class SnykClient implements SecurityScannerService {
   // ─────────────────────────────────────────────────────────────────────────
 
   @SuppressWarnings("unchecked")
-  private List<String> fetchProjectIds() {
+  private List<String> fetchProjectIds(String repositoryName) {
     try {
+      // Snyk REST API v3: orgs/{orgId}/projects
       Map<String, Object> response = webClient.get()
           .uri(restBaseUrl + "/orgs/{orgId}/projects?version={ver}&limit=100",
               snykOrgId, apiVersion)
@@ -119,7 +121,18 @@ public class SnykClient implements SecurityScannerService {
       if (data == null)
         return Collections.emptyList();
 
+      // Snyk 프로젝트 이름은 보통 "org/repo" 또는 "org/repo:branch" 형식입니다.
+      // 넘겨받은 repositoryName(예: "my-org/my-repo")이 포함된 프로젝트만 필터링합니다.
       return data.stream()
+          .filter(p -> {
+            Map<String, Object> attrs = (Map<String, Object>) p.get("attributes");
+            if (attrs == null) return false;
+            String snykProjectName = (String) attrs.get("name");
+            
+            // repositoryName이 포함되어 있는지 체크 (대소문자 무시)
+            return snykProjectName != null && 
+                   snykProjectName.toLowerCase().contains(repositoryName.toLowerCase());
+          })
           .map(p -> (String) p.get("id"))
           .filter(id -> id != null)
           .toList();
