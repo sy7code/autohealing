@@ -43,6 +43,10 @@ public class SecurityLog {
   @Column(updatable = false)
   private LocalDateTime detectedAt;
 
+  /** 웹훅 이벤트가 발생한 대상 GitHub 레포지토리 이름 (예: sy7code/auto-healing-demo) */
+  @Column(name = "repo_name")
+  private String repoName;
+
   // ── Dashboard / Approval용 추가 필드 ──
 
   /** 식별용 고유 취약점 ID (예: SNYK-xxx, SONAR-xxx) */

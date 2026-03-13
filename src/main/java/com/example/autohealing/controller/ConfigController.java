@@ -168,7 +168,12 @@ public class ConfigController {
       org.springframework.http.HttpEntity<java.util.Map<String, Object>> entity = new org.springframework.http.HttpEntity<>(
           requestBody, headers);
       String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
-      ResponseEntity<java.util.Map> response = restTemplate.postForEntity(finalUrl, entity, java.util.Map.class);
+      ResponseEntity<java.util.Map<String, Object>> response = restTemplate.exchange(
+          finalUrl,
+          org.springframework.http.HttpMethod.POST,
+          entity,
+          new org.springframework.core.ParameterizedTypeReference<java.util.Map<String, Object>>() {}
+      );
 
       if (response.getStatusCode().is2xxSuccessful()) {
         result.put("success", true);

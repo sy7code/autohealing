@@ -90,10 +90,10 @@ public class GiantPipelineIntegrationTest {
                 when(jiraService.createIssue(anyString(), anyString(), anyString(), anyList())).thenReturn("SCRUM-102");
 
                 // [Given] 5. Github PR 생성 번호 반환 모킹
-                when(githubService.getFileContentAsString(anyString(), any()))
+                when(githubService.getFileContentAsString(anyString(), anyString(), any()))
                                 .thenReturn("public class Secure { /* vulnerable */ }");
-                when(githubService.createPullRequest(any(), anyString(), anyString(), anyString())).thenReturn(777);
-                when(githubService.getRepoName()).thenReturn("sy7code/auto-healing-demo");
+                when(githubService.createPullRequest(anyString(), any(), anyString(), anyString(), anyString())).thenReturn(777);
+                when(githubService.getDefaultRepoName()).thenReturn("sy7code/auto-healing-demo");
 
                 // [Given] 6. DB 저장 시 ID 생성을 위해 모킹 (실제 DB 사용하는 대신 Mockito 사용)
                 SecurityLog savedLog = new SecurityLog("repo", "title", "CRITICAL", "PENDING");
@@ -126,7 +126,7 @@ public class GiantPipelineIntegrationTest {
                 verify(jiraService, timeout(20000)).transitionIssue(eq("SCRUM-102"), any());
 
                 // 5. Github PR 생성 확인
-                verify(githubService, timeout(20000)).createPullRequest(any(), anyString(),
+                verify(githubService, timeout(20000)).createPullRequest(anyString(), any(), anyString(),
                                 eq(mockAiResult.getFixedCode()),
                                 anyString());
 
