@@ -219,7 +219,7 @@ public class DashboardController {
         discordNotificationService.sendMergeSuccessAlert(logEntry.getThreatType(), prUrl);
       }
     } else {
-      log.info("[Approval] PR 번호가 없어 머지를 건너뜁니다. id={}", id);
+      log.info("[Approval] PR 번호가 없어 머지를 건너뜠니다. id={}", id);
     }
 
     // 2. Jira 티켓 → Done
