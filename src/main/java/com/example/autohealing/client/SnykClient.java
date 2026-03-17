@@ -153,8 +153,9 @@ public class SnykClient implements SecurityScannerService {
     try {
       log.info("[SnykClient] REST v3 통합 이슈 조회 - projectId={}", projectId);
 
+      // Snyk REST v3 정식 파라미터: scan_item.type=project & scan_item.id={projectId}
       Map<String, Object> response = webClient.get()
-          .uri(restBaseUrl + "/orgs/{orgId}/issues?version={ver}&project_id={projectId}&limit=100",
+          .uri(restBaseUrl + "/orgs/{orgId}/issues?version={ver}&scan_item.id={projectId}&scan_item.type=project&limit=100",
               snykOrgId, apiVersion, projectId)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
           .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
@@ -174,19 +175,27 @@ public class SnykClient implements SecurityScannerService {
       List<Map<String, Object>> result = data.stream()
           .map(issue -> {
             Map<String, Object> attrs = (Map<String, Object>) issue.getOrDefault("attributes", Map.of());
-            String severity = (String) attrs.getOrDefault("effective_severity_level",
-                attrs.getOrDefault("severity", "medium"));
+            
+            // v3에서는 effective_severity_level 또는 severity를 사용함
+            String severity = (String) attrs.get("effective_severity_level");
+            if (severity == null) {
+              severity = (String) attrs.getOrDefault("severity", "medium");
+            }
+            
             String title = (String) attrs.getOrDefault("title", "취약점 감지됨");
             String description = (String) attrs.getOrDefault("description", "");
             String type = (String) issue.getOrDefault("type", "issue");
 
-            // 파일 경로 추출 (code 이슈에서 지원)
+            // 파일 경로 추출 (v3 problems 구조 대응)
             String filePath = null;
-            Object problemsObj = attrs.get("problems");
-            if (problemsObj instanceof List<?> problems && !problems.isEmpty()) {
-              Object first = problems.get(0);
-              if (first instanceof Map<?, ?> p) {
-                filePath = (String) ((Map<?, ?>) p).get("file_path");
+            Object coordinates = attrs.get("coordinates");
+            if (coordinates instanceof List<?> list && !list.isEmpty()) {
+              Object first = list.get(0);
+              if (first instanceof Map<?, ?> m) {
+                 Object representation = m.get("representation");
+                 if (representation instanceof List<?> reprList && !reprList.isEmpty()) {
+                   filePath = reprList.get(0).toString();
+                 }
               }
             }
 
@@ -198,6 +207,7 @@ public class SnykClient implements SecurityScannerService {
             flat.put("packageName", attrs.getOrDefault("package_name", type));
             flat.put("version", attrs.getOrDefault("package_version", "unknown"));
             if (filePath != null) flat.put("file", filePath);
+            
             return (Map<String, Object>) flat;
           })
           .toList();
