@@ -383,9 +383,11 @@ public class SecurityOrchestrator {
    * 취약점 정보(description)에서 파일 경로를 추출해 서버(GitHub)에서 원본 소스코드를 가져옵니다.
    */
   private String readSourceFile(String repoName, UnifiedIssue issue) {
-    String filePath = extractFilePath(issue.getDescription());
-    if (filePath == null) {
-      return "// 파일 경로 정보 없음\n" + issue.getDescription();
+    String filePath = issue.getFilePath();
+    if (filePath == null || filePath.equals("build.gradle")) {
+       // filePath가 없거나 기본값일 경우, description에서 한 번 더 상세 추출 시도
+       String extracted = extractFilePath(issue.getDescription());
+       if (extracted != null) filePath = extracted;
     }
 
     // GitHub API를 통해 원격 코드를 가져옵니다
