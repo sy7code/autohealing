@@ -85,9 +85,9 @@ public class SnykClient implements SecurityScannerService {
       }
       log.info("[SnykClient] 대상 레포지토리 관련 프로젝트 {}개 발견", projectIds.size());
 
-      // Step2: 각 프로젝트 이슈 수집 (v1 endpoint)
+      // Step2: 각 프로젝트 이슈 수집 (REST v3 - 모든 타입 지원)
       return projectIds.stream()
-          .flatMap(projectId -> fetchIssuesV1(projectId).stream())
+          .flatMap(projectId -> fetchIssuesV3(projectId).stream())
           .toList();
 
     } catch (Exception e) {
@@ -145,22 +145,19 @@ public class SnykClient implements SecurityScannerService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Private – Step2: v1 프로젝트 이슈 조회
+  // Private – Step2: REST v3 통합 이슈 조회 (모든 타입: vuln, code, secrets 등)
   // ─────────────────────────────────────────────────────────────────────────
 
   @SuppressWarnings("unchecked")
-  private List<Map<String, Object>> fetchIssuesV1(String projectId) {
+  private List<Map<String, Object>> fetchIssuesV3(String projectId) {
     try {
-      log.info("[SnykClient] 이슈 조회 - projectId={}", projectId);
+      log.info("[SnykClient] REST v3 통합 이슈 조회 - projectId={}", projectId);
 
-      Map<String, Object> response = webClient.post()
-          .uri(v1BaseUrl + "/org/{orgId}/project/{projectId}/issues",
-              snykOrgId, projectId)
+      Map<String, Object> response = webClient.get()
+          .uri(restBaseUrl + "/orgs/{orgId}/issues?version={ver}&project_id={projectId}&limit=100",
+              snykOrgId, apiVersion, projectId)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-          .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-          .bodyValue(Map.of("filters", Map.of(
-              "severities", List.of("critical", "high", "medium"),
-              "types", List.of("vuln"))))
+          .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
           .retrieve()
           .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
           })
@@ -169,18 +166,74 @@ public class SnykClient implements SecurityScannerService {
       if (response == null)
         return Collections.emptyList();
 
-      Map<String, Object> issues = (Map<String, Object>) response.get("issues");
-      if (issues == null)
+      List<Map<String, Object>> data = (List<Map<String, Object>>) response.get("data");
+      if (data == null)
         return Collections.emptyList();
 
-      List<Map<String, Object>> vulns = (List<Map<String, Object>>) issues.get("vulnerabilities");
-      List<Map<String, Object>> result = vulns != null ? vulns : Collections.emptyList();
-      log.info("[SnykClient] projectId={} → {}건", projectId, result.size());
+      // REST v3 응답을 SnykParserImpl이 처리할 수 있는 flat map 형식으로 변환
+      List<Map<String, Object>> result = data.stream()
+          .map(issue -> {
+            Map<String, Object> attrs = (Map<String, Object>) issue.getOrDefault("attributes", Map.of());
+            String severity = (String) attrs.getOrDefault("effective_severity_level",
+                attrs.getOrDefault("severity", "medium"));
+            String title = (String) attrs.getOrDefault("title", "취약점 감지됨");
+            String description = (String) attrs.getOrDefault("description", "");
+            String type = (String) issue.getOrDefault("type", "issue");
+
+            // 파일 경로 추출 (code 이슈에서 지원)
+            String filePath = null;
+            Object problemsObj = attrs.get("problems");
+            if (problemsObj instanceof List<?> problems && !problems.isEmpty()) {
+              Object first = problems.get(0);
+              if (first instanceof Map<?, ?> p) {
+                filePath = (String) ((Map<?, ?>) p).get("file_path");
+              }
+            }
+
+            java.util.HashMap<String, Object> flat = new java.util.HashMap<>();
+            flat.put("id", issue.getOrDefault("id", "SNYK-UNKNOWN"));
+            flat.put("title", title);
+            flat.put("description", description);
+            flat.put("severity", severity);
+            flat.put("packageName", attrs.getOrDefault("package_name", type));
+            flat.put("version", attrs.getOrDefault("package_version", "unknown"));
+            if (filePath != null) flat.put("file", filePath);
+            return (Map<String, Object>) flat;
+          })
+          .toList();
+
+      log.info("[SnykClient] REST v3 - projectId={} → {}건", projectId, result.size());
       return result;
 
     } catch (WebClientResponseException ex) {
-      log.error("[SnykClient] 이슈 조회 실패 - projectId={}, status={}, body={}",
+      log.error("[SnykClient] REST v3 이슈 조회 실패 - projectId={}, status={}, body={}",
           projectId, ex.getStatusCode(), ex.getResponseBodyAsString());
+      // v3 실패 시 v1으로 폴백
+      return fetchIssuesV1Fallback(projectId);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private List<Map<String, Object>> fetchIssuesV1Fallback(String projectId) {
+    try {
+      log.info("[SnykClient] v1 폴백 이슈 조회 - projectId={}", projectId);
+      Map<String, Object> response = webClient.post()
+          .uri(v1BaseUrl + "/org/{orgId}/project/{projectId}/issues", snykOrgId, projectId)
+          .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
+          .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+          .bodyValue(Map.of("filters", Map.of(
+              "severities", List.of("critical", "high", "medium"),
+              "types", List.of("vuln", "license"))))
+          .retrieve()
+          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+          .block();
+      if (response == null) return Collections.emptyList();
+      Map<String, Object> issues = (Map<String, Object>) response.get("issues");
+      if (issues == null) return Collections.emptyList();
+      List<Map<String, Object>> vulns = (List<Map<String, Object>>) issues.get("vulnerabilities");
+      return vulns != null ? vulns : Collections.emptyList();
+    } catch (Exception ex) {
+      log.error("[SnykClient] v1 폴백도 실패 - projectId={}", projectId, ex);
       return Collections.emptyList();
     }
   }
