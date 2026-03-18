@@ -239,13 +239,49 @@ public class SnykClient implements SecurityScannerService {
             flat.put("description", attrs.getOrDefault("description", ""));
             flat.put("severity", severity);
             
-            // 파일 경로 추출
+            // 파일 경로 추출 (Snyk REST API v3)
+            // Code analysis(SAST): coordinates[0].representations[0].source_location.file_path
+            // Open Source(SCA): 파일 경로 없음 (build.gradle 등은 SnykParser에서 처리)
             Object coordinates = attrs.get("coordinates");
-            if (coordinates instanceof List<?> list && !list.isEmpty()) {
-                Map<String, Object> first = (Map<String, Object>) list.get(0);
-                List<Object> representation = (List<Object>) first.get("representation");
-                if (representation != null && !representation.isEmpty()) {
-                    flat.put("file", representation.get(0).toString());
+            if (coordinates instanceof List<?> coordList && !coordList.isEmpty()) {
+                Map<String, Object> firstCoord = (Map<String, Object>) coordList.get(0);
+
+                // 1순위: representations[0].source_location.file_path (v3 SAST 표준)
+                Object representationsObj = firstCoord.get("representations");
+                if (representationsObj instanceof List<?> repList && !repList.isEmpty()) {
+                    Map<String, Object> firstRep = (Map<String, Object>) repList.get(0);
+                    Object srcLoc = firstRep.get("source_location");
+                    if (srcLoc instanceof Map<?, ?> srcLocMap) {
+                        Object filePath = srcLocMap.get("file_path");
+                        if (filePath != null && !filePath.toString().isBlank()) {
+                            flat.put("file", filePath.toString());
+                            log.debug("[SnykClient] 파일 경로 추출 성공 (source_location): {}", filePath);
+                        }
+                    }
+                    // 2순위: representations[0].resource_path
+                    if (!flat.containsKey("file")) {
+                        Object resourcePath = firstRep.get("resource_path");
+                        if (resourcePath != null && !resourcePath.toString().isBlank()) {
+                            flat.put("file", resourcePath.toString());
+                            log.debug("[SnykClient] 파일 경로 추출 성공 (resource_path): {}", resourcePath);
+                        }
+                    }
+                }
+
+                // 3순위: 구버전 단수형 representation[0] (하위 호환)
+                if (!flat.containsKey("file")) {
+                    Object representationObj = firstCoord.get("representation");
+                    if (representationObj instanceof List<?> oldRepList && !oldRepList.isEmpty()) {
+                        String val = oldRepList.get(0).toString();
+                        if (!val.isBlank()) {
+                            flat.put("file", val);
+                            log.debug("[SnykClient] 파일 경로 추출 성공 (representation 구버전): {}", val);
+                        }
+                    }
+                }
+
+                if (!flat.containsKey("file")) {
+                    log.warn("[SnykClient] 파일 경로 추출 실패 - issueId={}", flat.get("id"));
                 }
             }
             return (Map<String, Object>) flat;
