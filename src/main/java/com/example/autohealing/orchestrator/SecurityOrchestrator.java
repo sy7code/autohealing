@@ -168,6 +168,11 @@ public class SecurityOrchestrator {
   private java.util.Set<String> applyAiRemediation(String issueKey, String repoName, List<UnifiedIssue> issues) {
     java.util.Set<String> fixedIds = new java.util.HashSet<>();
 
+    log.info("[Orchestrator][Diagnostic] 전체 이슈 목록 ({}건):", issues.size());
+    for (UnifiedIssue i : issues) {
+      log.info(" - ID: {}, Severity: {}, Source: {}, Title: {}", i.getId(), i.getSeverity(), i.getSource(), i.getTitle());
+    }
+
     List<UnifiedIssue> targets = issues.stream()
         .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL
             || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
@@ -175,7 +180,7 @@ public class SecurityOrchestrator {
 
     java.util.Set<String> processedIds = new java.util.HashSet<>();
 
-    log.info("[Orchestrator][AI] CRITICAL/HIGH {}건 AI 수정 시도 및 티켓 생성", targets.size());
+    log.info("[Orchestrator][AI] CRITICAL/HIGH 필터링 결과: {}건 AI 수정 도 및 티켓 생성 (원래 {}건)", targets.size(), issues.size());
 
     for (UnifiedIssue issue : targets) {
       if (!processedIds.add(issue.getId())) {
@@ -191,18 +196,19 @@ public class SecurityOrchestrator {
   }
 
   private boolean processSingleVulnerability(String parentIssueKey, String repoName, UnifiedIssue issue) {
+    log.info("[Orchestrator][Diagnostic] 개별 취약점 처리 시작 - ID: {}", issue.getId());
     if (deduplicationService.shouldSkip(issue)) {
-      log.info("[Orchestrator] 중복(Regression 방어 및 어뷰징 방지)으로 인해 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
+      log.warn("[Orchestrator][Diagnostic] 중복(Regression 방어 및 어뷰징 방지)으로 인 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
       return false;
     }
 
     // v10: 인프라 취약점은 AI 수정을 건너뛰고 수동 리뷰 상태로 바로 저장 (CSPM 분리)
     if (!ScannerConstants.SOURCE_SNYK.equals(issue.getSource())) {
-      log.info("[Orchestrator] 인프라 스캐너({})에서 발견된 이슈이므로 AI 자동 수정을 건너뛰고 수동 리뷰용 알림만 생성합니다. ID={}", issue.getSource(),
-          issue.getId());
+      log.warn("[Orchestrator][Diagnostic] 인프라 스캐너({})에서 발견된 이슈이므로 AI 자동 수정을 건너뛰고 수동 리뷰용 알림만 생성합니다. ID={}", issue.getSource(), issue.getId());
       createTicketsAndPrs(repoName, issue, null, null, "인프라(CSPM) 취약점이므로 수동 설정 변경(Manual Review)이 필요합니다.", false);
       return false;
     }
+
 
     boolean isAiFixed = false;
     String fixedCode = "";
