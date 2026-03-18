@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -17,18 +18,13 @@ import org.springframework.core.ParameterizedTypeReference;
  * Snyk 클라이언트 (REST v3 + v1 혼합 전략).
  *
  * <pre>
- * Step1: GET  /rest/orgs/{orgId}/projects  → 프로젝트 ID 목록 (REST v3)
- * Step2: POST /v1/org/{orgId}/project/{projectId}/issues → 이슈 목록 (v1, 아직 유효)
+ * v20 개선: '이름 기반 검색'에서 'Target(레포지토리) 소속 기반 검색'으로 변경.
+ * Snyk Code 프로젝트가 "Code analysis"라는 공통 이름을 가져도 정확히 찾아냅니다.
  * </pre>
- *
- * <p>
- * SNYK_API_TOKEN, SNYK_ORG_ID는 {@code .env}에 설정하세요.
  */
 @Slf4j
 @Component
 public class SnykClient implements SecurityScannerService {
-
-  // API 설정은 application.yml 에서 주입받습니다.
 
   private final WebClient webClient;
   private final String snykApiToken;
@@ -51,10 +47,6 @@ public class SnykClient implements SecurityScannerService {
     this.apiVersion = apiVersion;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Public API
-  // ─────────────────────────────────────────────────────────────────────────
-
   @Override
   public String providerName() {
     return "Snyk-REST";
@@ -62,7 +54,6 @@ public class SnykClient implements SecurityScannerService {
 
   @Override
   public List<Map<String, Object>> scan(String repositoryUri) {
-    // repositoryUri: "sy7code/auto-healing-demo" 형식으로 들어옵니다.
     return fetchVulnerabilities(repositoryUri);
   }
 
@@ -72,20 +63,20 @@ public class SnykClient implements SecurityScannerService {
       return mockVulnerabilities();
     }
     if (snykOrgId == null || snykOrgId.isBlank()) {
-      log.error("[SnykClient] SNYK_ORG_ID 미설정 → .env에 추가하세요.");
+      log.error("[SnykClient] SNYK_ORG_ID 미설정");
       return Collections.emptyList();
     }
 
     try {
-      // Step1: REST v3로 프로젝트 목록 조회 (현재 레포지토리 이름으로 필터링)
+      // Step1: Target ID를 먼저 찾고 해당 Target 소속 프로젝트들을 수집
       List<String> projectIds = fetchProjectIds(repositoryUri);
       if (projectIds.isEmpty()) {
-        log.warn("[SnykClient] 일치하는 프로젝트 없음 - repoUri={}, orgId={}", repositoryUri, snykOrgId);
-        return Collections.emptyList(); // 실제 환경에서는 결과 없음으로 처리
+        log.warn("[SnykClient] 일치하는 프로젝트 없음 - repoUri={}", repositoryUri);
+        return Collections.emptyList();
       }
       log.info("[SnykClient] 대상 레포지토리 관련 프로젝트 {}개 발견", projectIds.size());
 
-      // Step2: 각 프로젝트 이슈 수집 (REST v3 - 모든 타입 지원)
+      // Step2: 각 프로젝트 이슈 수집 (REST v3)
       return projectIds.stream()
           .flatMap(projectId -> fetchIssuesV3(projectId).stream())
           .toList();
@@ -96,113 +87,124 @@ public class SnykClient implements SecurityScannerService {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Private – Step1: REST v3 프로젝트 목록
-  // ─────────────────────────────────────────────────────────────────────────
-
+  /**
+   * 레포지토리 이름을 통해 Snyk Target ID를 찾고, 그에 속한 모든 프로젝트 ID를 반환합니다.
+   */
   @SuppressWarnings("unchecked")
   private List<String> fetchProjectIds(String repositoryName) {
+    List<String> allProjectIds = new ArrayList<>();
     try {
-      // "org/repo" 형태에서 "repo" 부분만 추출하여 검색 키워드로 사용
-      final String searchKeyword = (repositoryName != null && repositoryName.contains("/"))
-          ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1)
-          : repositoryName;
+      log.info("[SnykClient] Target 기반 프로젝트 탐지 시작: {}", repositoryName);
 
-      // Snyk v1 API: org/{orgId}/projects
-      log.info("[SnykClient] 프로젝트 목록 조회 시도: {}/org/{}/projects", v1BaseUrl, snykOrgId);
-
-      Map<String, Object> response = webClient.get()
-          .uri(v1BaseUrl + "/org/{orgId}/projects", snykOrgId)
+      // 1. Snyk REST v3: 이 레포지토리(Target)의 고유 ID 찾기
+      Map<String, Object> targetResp = webClient.get()
+          .uri(restBaseUrl + "/orgs/{orgId}/targets?version={ver}&display_name={repoName}",
+              snykOrgId, apiVersion, repositoryName)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-          .header(HttpHeaders.ACCEPT, "application/json")
+          .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
           .retrieve()
-          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
-          })
+          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
           .block();
 
-      if (response == null) {
-        log.warn("[SnykClient] Snyk API 응답이 null입니다.");
-        return Collections.emptyList();
+      if (targetResp != null) {
+          List<Map<String, Object>> targetData = (List<Map<String, Object>>) targetResp.get("data");
+          if (targetData != null && !targetData.isEmpty()) {
+              for (Map<String, Object> target : targetData) {
+                  String targetId = (String) target.get("id");
+                  log.info("[SnykClient] Target 발견 - ID: {}, Name: {}", targetId, repositoryName);
+
+                  // 2. 해당 Target에 속한 모든 프로젝트 가져오기
+                  Map<String, Object> projResp = webClient.get()
+                      .uri(restBaseUrl + "/orgs/{orgId}/projects?version={ver}&target_id={targetId}&limit=100",
+                          snykOrgId, apiVersion, targetId)
+                      .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
+                      .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
+                      .retrieve()
+                      .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                      .block();
+
+                  if (projResp != null) {
+                      List<Map<String, Object>> projData = (List<Map<String, Object>>) projResp.get("data");
+                      if (projData != null) {
+                          for (Map<String, Object> p : projData) {
+                              String pid = (String) p.get("id");
+                              Map<String, Object> attrs = (Map<String, Object>) p.get("attributes");
+                              String pname = (attrs != null) ? (String) attrs.get("name") : "unknown";
+                              log.info("[SnykClient] ✅ 프로젝트 매칭(Target소속): {} (ID: {})", pname, pid);
+                              allProjectIds.add(pid);
+                          }
+                      }
+                  }
+              }
+          }
       }
 
-      List<Map<String, Object>> projects = (List<Map<String, Object>>) response.get("projects");
-      if (projects == null) {
-        log.warn("[SnykClient] 응답에 'projects' 필드가 없습니다. 응답 keys: {}", response.keySet());
-        return Collections.emptyList();
+      // 3. (백업) 이름 기반(v1) 검색 병행
+      if (allProjectIds.isEmpty()) {
+          log.info("[SnykClient] Target으로 발견된 프로젝트가 없음. 이름 기반(v1) 검색을 수행합니다.");
+          final String searchKeyword = (repositoryName != null && repositoryName.contains("/"))
+              ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1)
+              : repositoryName;
+
+          Map<String, Object> v1Resp = webClient.get()
+              .uri(v1BaseUrl + "/org/{orgId}/projects", snykOrgId)
+              .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
+              .header(HttpHeaders.ACCEPT, "application/json")
+              .retrieve()
+              .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+              .block();
+
+          if (v1Resp != null) {
+              List<Map<String, Object>> v1Projects = (List<Map<String, Object>>) v1Resp.get("projects");
+              if (v1Projects != null) {
+                  for (Map<String, Object> p : v1Projects) {
+                      String pname = (String) p.get("name");
+                      String pid = (String) p.get("id");
+                      if (pname != null && searchKeyword != null && pname.toLowerCase().contains(searchKeyword.toLowerCase())) {
+                          log.info("[SnykClient] ✅ 프로젝트 매칭(이름기준): {} (ID: {})", pname, pid);
+                          allProjectIds.add(pid);
+                      }
+                  }
+              }
+          }
       }
 
-      log.info("[SnykClient] Snyk에서 총 {}개의 프로젝트를 찾았습니다. 키워드 '{}'로 필터링을 시작합니다.", projects.size(), searchKeyword);
+      log.info("[SnykClient] 최종 탐지 결과: 총 {}개의 프로젝트 ID 수집됨", allProjectIds.size());
+      return allProjectIds.stream().distinct().toList();
 
-      // Snyk v1 프로젝트 이름은 보통 "org/repo" 또는 "org/repo:branch" 형식으로 확실하게 대상 레포지토리를 포함합니다.
-      List<String> foundIds = projects.stream()
-          .filter(p -> {
-            String snykProjectName = (String) p.get("name");
-            boolean match = snykProjectName != null && searchKeyword != null &&
-                   snykProjectName.toLowerCase().contains(searchKeyword.toLowerCase());
-            if (match) {
-                log.info("[SnykClient] ✅ 매칭 성공: {} (ID: {})", snykProjectName, p.get("id"));
-            } else {
-                log.debug("[SnykClient] ❌ 매칭 실패: {}", snykProjectName);
-            }
-            return match;
-          })
-          .map(p -> (String) p.get("id"))
-          .filter(id -> id != null)
-          .toList();
-
-      log.info("[SnykClient] 필터링 결과: {}개의 프로젝트 ID를 반환합니다.", foundIds.size());
-      return foundIds;
-
-    } catch (WebClientResponseException ex) {
-      log.error("[SnykClient] 프로젝트 목록 조회 실패 - status={}, body={}",
-          ex.getStatusCode(), ex.getResponseBodyAsString());
+    } catch (Exception ex) {
+      log.error("[SnykClient] 프로젝트 탐지 중 오류 발생 - repo={}", repositoryName, ex);
       return Collections.emptyList();
     }
   }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Private – Step2: REST v3 통합 이슈 조회 (모든 타입: vuln, code, secrets 등)
-  // ─────────────────────────────────────────────────────────────────────────
 
   @SuppressWarnings("unchecked")
   private List<Map<String, Object>> fetchIssuesV3(String projectId) {
     try {
       log.info("[SnykClient] REST v3 통합 이슈 조회 - projectId={}", projectId);
 
-      // Snyk REST v3 정식 파라미터: scan_item.type=project & scan_item.id={projectId}
       Map<String, Object> response = webClient.get()
           .uri(restBaseUrl + "/orgs/{orgId}/issues?version={ver}&scan_item.id={projectId}&scan_item.type=project&limit=100",
               snykOrgId, apiVersion, projectId)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
           .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
           .retrieve()
-          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
-          })
+          .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
           .block();
 
-      if (response == null)
-        return Collections.emptyList();
-
+      if (response == null) return Collections.emptyList();
       List<Map<String, Object>> data = (List<Map<String, Object>>) response.get("data");
-      if (data == null)
-        return Collections.emptyList();
+      if (data == null) return Collections.emptyList();
 
-      // REST v3 응답을 SnykParserImpl이 처리할 수 있는 flat map 형식으로 변환
-      List<Map<String, Object>> result = data.stream()
+      return data.stream()
           .map(issue -> {
             Map<String, Object> attrs = (Map<String, Object>) issue.getOrDefault("attributes", Map.of());
-            
-            // v3에서는 effective_severity_level 또는 severity를 사용함
             String severity = (String) attrs.get("effective_severity_level");
-            if (severity == null) {
-              severity = (String) attrs.getOrDefault("severity", "medium");
-            }
+            if (severity == null) severity = (String) attrs.getOrDefault("severity", "medium");
             
             String title = (String) attrs.getOrDefault("title", "취약점 감지됨");
             String description = (String) attrs.getOrDefault("description", "");
-            String type = (String) issue.getOrDefault("type", "issue");
-
-            // 파일 경로 추출 (v3 problems 구조 대응)
+            
             String filePath = null;
             Object coordinates = attrs.get("coordinates");
             if (coordinates instanceof List<?> list && !list.isEmpty()) {
@@ -220,7 +222,7 @@ public class SnykClient implements SecurityScannerService {
             flat.put("title", title);
             flat.put("description", description);
             flat.put("severity", severity);
-            flat.put("packageName", attrs.getOrDefault("package_name", type));
+            flat.put("packageName", attrs.getOrDefault("package_name", issue.getOrDefault("type", "issue")));
             flat.put("version", attrs.getOrDefault("package_version", "unknown"));
             if (filePath != null) flat.put("file", filePath);
             
@@ -228,14 +230,12 @@ public class SnykClient implements SecurityScannerService {
           })
           .toList();
 
-      log.info("[SnykClient] REST v3 - projectId={} → {}건 발견", projectId, result.size());
-      return result;
-
     } catch (WebClientResponseException ex) {
-      log.error("[SnykClient] REST v3 이슈 조회 실패 - projectId={}, status={}, body={}",
-          projectId, ex.getStatusCode(), ex.getResponseBodyAsString());
-      // v3 실패 시 v1으로 폴백
+      log.error("[SnykClient] REST v3 이슈 조회 실패 - projectId={}, status={}", projectId, ex.getStatusCode());
       return fetchIssuesV1Fallback(projectId);
+    } catch (Exception ex) {
+      log.error("[SnykClient] 이슈 조회 중 예기치 않은 오류 - projectId={}", projectId, ex);
+      return Collections.emptyList();
     }
   }
 
@@ -259,31 +259,15 @@ public class SnykClient implements SecurityScannerService {
       List<Map<String, Object>> vulns = (List<Map<String, Object>>) issues.get("vulnerabilities");
       return vulns != null ? vulns : Collections.emptyList();
     } catch (Exception ex) {
-      log.error("[SnykClient] v1 폴백도 실패 - projectId={}", projectId, ex);
+      log.error("[SnykClient] v1 폴백 실패 - projectId={}", projectId, ex);
       return Collections.emptyList();
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Mock
-  // ─────────────────────────────────────────────────────────────────────────
-
   private List<Map<String, Object>> mockVulnerabilities() {
-    log.info("[SnykClient] Mock 취약점 데이터 2건 반환");
     return List.of(
-        Map.of(
-            "id", "SNYK-JAVA-LOG4J-2314923",
-            "title", "Remote Code Execution in Log4Shell",
-            "description", "Log4j2 JNDI lookup allows remote attackers to execute arbitrary code.",
-            "severity", "critical",
-            "packageName", "log4j-core",
-            "version", "2.14.1"),
-        Map.of(
-            "id", "SNYK-JAVA-JACKSON-1234567",
-            "title", "Improper Input Validation in Jackson",
-            "description", "Missing input validation allows type confusion attacks.",
-            "severity", "high",
-            "packageName", "jackson-databind",
-            "version", "2.12.0"));
+        Map.of("id", "MOCK-1", "title", "Mock Critical Vuln", "severity", "critical"),
+        Map.of("id", "MOCK-2", "title", "Mock High Vuln", "severity", "high")
+    );
   }
 }
