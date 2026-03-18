@@ -103,6 +103,11 @@ public class SnykClient implements SecurityScannerService {
   @SuppressWarnings("unchecked")
   private List<String> fetchProjectIds(String repositoryName) {
     try {
+      // "org/repo" 형태에서 "repo" 부분만 추출하여 검색 키워드로 사용
+      final String searchKeyword = (repositoryName != null && repositoryName.contains("/"))
+          ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1)
+          : repositoryName;
+
       // Snyk REST API v3: orgs/{orgId}/projects
       Map<String, Object> response = webClient.get()
           .uri(restBaseUrl + "/orgs/{orgId}/projects?version={ver}&limit=100",
@@ -122,16 +127,16 @@ public class SnykClient implements SecurityScannerService {
         return Collections.emptyList();
 
       // Snyk 프로젝트 이름은 보통 "org/repo" 또는 "org/repo:branch" 형식입니다.
-      // 넘겨받은 repositoryName(예: "my-org/my-repo")이 포함된 프로젝트만 필터링합니다.
+      // 핵심 레포지토리 이름(예: "my-repo")이 포함된 프로젝트만 필터링합니다.
       return data.stream()
           .filter(p -> {
             Map<String, Object> attrs = (Map<String, Object>) p.get("attributes");
             if (attrs == null) return false;
             String snykProjectName = (String) attrs.get("name");
             
-            // repositoryName이 포함되어 있는지 체크 (대소문자 무시)
-            return snykProjectName != null && 
-                   snykProjectName.toLowerCase().contains(repositoryName.toLowerCase());
+            // repositoryName 핵심 키워드가 포함되어 있는지 체크 (대소문자 무시)
+            return snykProjectName != null && searchKeyword != null &&
+                   snykProjectName.toLowerCase().contains(searchKeyword.toLowerCase());
           })
           .map(p -> (String) p.get("id"))
           .filter(id -> id != null)
