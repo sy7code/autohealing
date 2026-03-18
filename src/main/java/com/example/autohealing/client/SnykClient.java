@@ -108,12 +108,11 @@ public class SnykClient implements SecurityScannerService {
           ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1)
           : repositoryName;
 
-      // Snyk REST API v3: orgs/{orgId}/projects
+      // Snyk v1 API: org/{orgId}/projects (v1은 프로젝트 이름에 레포지토리 경로가 포함되어 있어 필터링 용이)
       Map<String, Object> response = webClient.get()
-          .uri(restBaseUrl + "/orgs/{orgId}/projects?version={ver}&limit=100",
-              snykOrgId, apiVersion)
+          .uri(v1BaseUrl + "/org/{orgId}/projects", snykOrgId)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-          .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
+          .header(HttpHeaders.ACCEPT, "application/json")
           .retrieve()
           .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
           })
@@ -122,17 +121,14 @@ public class SnykClient implements SecurityScannerService {
       if (response == null)
         return Collections.emptyList();
 
-      List<Map<String, Object>> data = (List<Map<String, Object>>) response.get("data");
-      if (data == null)
+      List<Map<String, Object>> projects = (List<Map<String, Object>>) response.get("projects");
+      if (projects == null)
         return Collections.emptyList();
 
-      // Snyk 프로젝트 이름은 보통 "org/repo" 또는 "org/repo:branch" 형식입니다.
-      // 핵심 레포지토리 이름(예: "my-repo")이 포함된 프로젝트만 필터링합니다.
-      return data.stream()
+      // Snyk v1 프로젝트 이름은 보통 "org/repo" 또는 "org/repo:branch" 형식으로 확실하게 대상 레포지토리를 포함합니다.
+      return projects.stream()
           .filter(p -> {
-            Map<String, Object> attrs = (Map<String, Object>) p.get("attributes");
-            if (attrs == null) return false;
-            String snykProjectName = (String) attrs.get("name");
+            String snykProjectName = (String) p.get("name");
             
             // repositoryName 핵심 키워드가 포함되어 있는지 체크 (대소문자 무시)
             return snykProjectName != null && searchKeyword != null &&
