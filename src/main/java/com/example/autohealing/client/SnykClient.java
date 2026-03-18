@@ -108,7 +108,9 @@ public class SnykClient implements SecurityScannerService {
           ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1)
           : repositoryName;
 
-      // Snyk v1 API: org/{orgId}/projects (v1은 프로젝트 이름에 레포지토리 경로가 포함되어 있어 필터링 용이)
+      // Snyk v1 API: org/{orgId}/projects
+      log.info("[SnykClient] 프로젝트 목록 조회 시도: {}/org/{}/projects", v1BaseUrl, snykOrgId);
+
       Map<String, Object> response = webClient.get()
           .uri(v1BaseUrl + "/org/{orgId}/projects", snykOrgId)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
@@ -118,25 +120,38 @@ public class SnykClient implements SecurityScannerService {
           })
           .block();
 
-      if (response == null)
+      if (response == null) {
+        log.warn("[SnykClient] Snyk API 응답이 null입니다.");
         return Collections.emptyList();
+      }
 
       List<Map<String, Object>> projects = (List<Map<String, Object>>) response.get("projects");
-      if (projects == null)
+      if (projects == null) {
+        log.warn("[SnykClient] 응답에 'projects' 필드가 없습니다. 응답 keys: {}", response.keySet());
         return Collections.emptyList();
+      }
+
+      log.info("[SnykClient] Snyk에서 총 {}개의 프로젝트를 찾았습니다. 키워드 '{}'로 필터링을 시작합니다.", projects.size(), searchKeyword);
 
       // Snyk v1 프로젝트 이름은 보통 "org/repo" 또는 "org/repo:branch" 형식으로 확실하게 대상 레포지토리를 포함합니다.
-      return projects.stream()
+      List<String> foundIds = projects.stream()
           .filter(p -> {
             String snykProjectName = (String) p.get("name");
-            
-            // repositoryName 핵심 키워드가 포함되어 있는지 체크 (대소문자 무시)
-            return snykProjectName != null && searchKeyword != null &&
+            boolean match = snykProjectName != null && searchKeyword != null &&
                    snykProjectName.toLowerCase().contains(searchKeyword.toLowerCase());
+            if (match) {
+                log.info("[SnykClient] ✅ 매칭 성공: {} (ID: {})", snykProjectName, p.get("id"));
+            } else {
+                log.debug("[SnykClient] ❌ 매칭 실패: {}", snykProjectName);
+            }
+            return match;
           })
           .map(p -> (String) p.get("id"))
           .filter(id -> id != null)
           .toList();
+
+      log.info("[SnykClient] 필터링 결과: {}개의 프로젝트 ID를 반환합니다.", foundIds.size());
+      return foundIds;
 
     } catch (WebClientResponseException ex) {
       log.error("[SnykClient] 프로젝트 목록 조회 실패 - status={}, body={}",
@@ -213,7 +228,7 @@ public class SnykClient implements SecurityScannerService {
           })
           .toList();
 
-      log.info("[SnykClient] REST v3 - projectId={} → {}건", projectId, result.size());
+      log.info("[SnykClient] REST v3 - projectId={} → {}건 발견", projectId, result.size());
       return result;
 
     } catch (WebClientResponseException ex) {
