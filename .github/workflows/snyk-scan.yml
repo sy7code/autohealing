@@ -86,7 +86,7 @@ jobs:
       # JSON 파싱은 서버(Java)에서 처리.
       - name: Send scan results to backend server
         run: |
-          BACKEND_URL="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          BACKEND_URL="https://autohealing-backend-prod-ayfbewftcxeycbbw.southeastasia-01.azurewebsites.net"
           echo "서버로 결과 전송 중: ${BACKEND_URL}/api/webhook/snyk"
 
           HTTP_STATUS=$(curl -s -o curl-response.txt -w "%{http_code}" \
@@ -98,15 +98,15 @@ jobs:
             -H "X-Committer: ${{ github.actor }}" \
             --max-time 30 \
             --data @snyk-result.json \
-            "${BACKEND_URL}/api/webhook/snyk")
+            "${BACKEND_URL}/api/webhook/snyk") || true
 
           echo "서버 응답 코드: ${HTTP_STATUS}"
-          cat curl-response.txt
+          cat curl-response.txt || true
 
           if [ "$HTTP_STATUS" = "202" ] || [ "$HTTP_STATUS" = "200" ]; then
             echo "✅ 서버 전송 성공 (status=${HTTP_STATUS})"
           else
-            echo "⚠️ 서버 전송 실패 (status=${HTTP_STATUS}). 서버 로그를 확인하세요."
+            echo "⚠️ 서버 전송 실패 (status=${HTTP_STATUS}). AZURE_WEBAPP_NAME Secret 값과 Azure App Service 이름이 일치하는지 확인하세요."
           fi
 
       # ── 9. 스캔 결과 아티팩트 업로드 (선택) ──────────────────
