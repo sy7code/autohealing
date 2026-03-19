@@ -20,6 +20,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import com.example.autohealing.common.ScannerConstants;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -120,16 +121,30 @@ public class SecurityOrchestrator {
       // A. 다중 모듈 스캔 연동 (ScannerManager)
       log.info("[Orchestrator][Async] 스캐너 매니저를 통해 취약점 통합 수집 중...");
       List<Map<String, Object>> rawIssues = scannerManager.runAllActiveScanners(repoName);
-      // v18: SnykClient를 ScannerManager로 교체하면서 UnifiedIssue 변환을 여기서 수행하거나,
-      // GenericApiScanner가 이미 UnifiedIssue 형식을 Map에 매핑했다면 그대로 파싱합니다.
-      // SnykParserImpl을 활용해 UnifiedIssue로 변환합니다.
+      log.info("[Orchestrator][Async] rawIssues 수신: {}건", rawIssues.size());
 
-      List<UnifiedIssue> issues = rawIssues.stream()
-          .map(snykParser::toUnifiedIssue)
-          .toList();
-      log.info("[Orchestrator][Async] 통합 스캔 완료 - 취약점 {}건", issues.size());
+      // 디버그: rawIssues 내용 출력
+      for (int idx = 0; idx < rawIssues.size(); idx++) {
+        Map<String, Object> raw = rawIssues.get(idx);
+        log.info("[Orchestrator][Async] rawIssue[{}]: id={}, severity={}, title={}, scannerName={}",
+            idx, raw.get("id"), raw.get("severity"), raw.get("title"), raw.get("scannerName"));
+      }
 
-      if (issues == null || issues.isEmpty()) {
+      // UnifiedIssue 변환 (개별 예외 방어)
+      List<UnifiedIssue> issues = new ArrayList<>();
+      for (Map<String, Object> raw : rawIssues) {
+        try {
+          UnifiedIssue issue = snykParser.toUnifiedIssue(raw);
+          issues.add(issue);
+          log.info("[Orchestrator][Async] UnifiedIssue 변환 성공: id={}, severity={}, source={}, filePath={}",
+              issue.getId(), issue.getSeverity(), issue.getSource(), issue.getFilePath());
+        } catch (Exception e) {
+          log.error("[Orchestrator][Async] UnifiedIssue 변환 실패: raw={}", raw, e);
+        }
+      }
+      log.info("[Orchestrator][Async] 통합 스캔 완료 - 취약점 {}건 (rawIssues {}건 중)", issues.size(), rawIssues.size());
+
+      if (issues.isEmpty()) {
         updateWithNoIssues(issueKey, repoName);
         return;
       }
