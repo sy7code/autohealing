@@ -2,6 +2,15 @@ server:
   # Azure App Service 기본 포트 80 사용. (WEBSITES_PORT 환경변수로 오버라이드 가능)
   port: ${PORT:80}
 
+# ──────────────────────────────────────────────
+# 운영 환경 플러그인 설정
+# Snyk 무료 플랜에서는 REST API v3 403 제한 있음.
+# GitHub Actions에서 snyk-scan.yml로 스캔 후 /api/webhook/snyk 으로 결과를 전송하므로
+# 내장 SnykClient(REST API 방식)를 비활성화합니다.
+# ──────────────────────────────────────────────
+plugin:
+  use-static-defaults: false
+
 spring:
   datasource:
     # Supabase (PostgreSQL) 연결 정보. 민감정보는 환경변수(App Settings)에서 주입

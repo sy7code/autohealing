@@ -1,0 +1,179 @@
+# ──────────────────────────────────────────────────────────────
+# Snyk 보안 스캔 워크플로우
+#
+# 트리거:
+#   - develop / feature/** / main 브랜치 push
+#   - 수동 실행 (workflow_dispatch)
+#
+# 동작:
+#   1. Snyk CLI로 취약점 스캔 (snyk test --json)
+#   2. 스캔 결과 + repo/commit/committer 정보를 서버 /api/webhook/snyk 으로 POST
+#   3. 서버가 Jira 티켓 생성 + AI 자동 수정을 비동기 처리
+#
+# 필요한 GitHub Secrets:
+#   - SNYK_TOKEN        : Snyk CLI 인증 토큰 (snyk auth 용)
+#   - AZURE_WEBAPP_NAME : Azure App Service 이름 (CD와 공유, 이미 존재)
+# ──────────────────────────────────────────────────────────────
+name: Snyk Security Scan → Server
+
+on:
+  push:
+    branches:
+      - develop
+      - 'feature/**'
+      - main
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '수동 스캔 사유'
+        required: false
+        default: '수동 보안 스캔 실행'
+
+jobs:
+  snyk-scan:
+    name: Snyk Scan & Report to Server
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. 소스 코드 체크아웃 ─────────────────────────────────
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # ── 2. JDK 21 설치 (Java 프로젝트 의존성 해석용) ──────────
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # ── 3. Gradle 캐시 ────────────────────────────────────────
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # ── 4. Gradle 실행 권한 부여 ──────────────────────────────
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ── 5. Snyk CLI 설치 ──────────────────────────────────────
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      # ── 6. Snyk 인증 ──────────────────────────────────────────
+      - name: Authenticate with Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+
+      # ── 7. Snyk 스캔 실행 (JSON 결과를 파일로 저장) ───────────
+      # --all-projects: 멀티 모듈 프로젝트 전체 스캔
+      # || true: 취약점 발견 시 exit code 1을 무시하고 계속 진행
+      - name: Run Snyk scan
+        run: |
+          snyk test --json --all-projects > snyk-result.json || true
+          echo "스캔 완료. 결과 파일 크기: $(wc -c < snyk-result.json) bytes"
+          # 취약점 수 미리 확인 (로그용)
+          VULN_COUNT=$(cat snyk-result.json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          vulns = []
+          if isinstance(data, dict):
+              vulns = data.get('vulnerabilities', [])
+          elif isinstance(data, list):
+              for item in data:
+                  if isinstance(item, dict):
+                      vulns.extend(item.get('vulnerabilities', []))
+          print(len(vulns))
+          " 2>/dev/null || echo "0")
+          echo "발견된 취약점: ${VULN_COUNT}건"
+
+      # ── 8. 스캔 결과를 서버로 POST ────────────────────────────
+      # --all-projects는 배열 형태로 리턴될 수 있으므로, 파이썬으로 정규화
+      - name: Send scan results to backend server
+        env:
+          BACKEND_URL: https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net
+          REPO_NAME: ${{ github.repository }}
+          COMMIT_ID: ${{ github.sha }}
+          COMMITTER: ${{ github.actor }}
+        run: |
+          echo "서버로 결과 전송 중: ${BACKEND_URL}/api/webhook/snyk"
+
+          # Snyk JSON 결과를 서버 페이로드 형식으로 정규화
+          python3 << 'EOF'
+          import json, os, sys
+
+          with open('snyk-result.json', 'r') as f:
+              raw = json.load(f)
+
+          # --all-projects는 배열, 단일 프로젝트는 dict
+          vulns = []
+          if isinstance(raw, dict):
+              vulns = raw.get('vulnerabilities', [])
+          elif isinstance(raw, list):
+              for item in raw:
+                  if isinstance(item, dict):
+                      vulns.extend(item.get('vulnerabilities', []))
+
+          # 서버 페이로드 구성
+          payload = {
+              'repo': os.environ.get('REPO_NAME', 'unknown'),
+              'commit': os.environ.get('COMMIT_ID', 'unknown')[:8],
+              'committer': os.environ.get('COMMITTER', 'unknown'),
+              'vulnerabilities': vulns
+          }
+
+          with open('server-payload.json', 'w') as f:
+              json.dump(payload, f)
+
+          print(f"페이로드 준비 완료: {len(vulns)}건의 취약점")
+          EOF
+
+          # 서버로 POST 요청
+          HTTP_STATUS=$(curl -s -o curl-response.txt -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Source: github-actions" \
+            --max-time 30 \
+            --data @server-payload.json \
+            "${BACKEND_URL}/api/webhook/snyk")
+
+          echo "서버 응답 코드: ${HTTP_STATUS}"
+          cat curl-response.txt
+
+          if [ "$HTTP_STATUS" = "202" ] || [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ 서버 전송 성공 (status=${HTTP_STATUS})"
+          else
+            echo "⚠️ 서버 전송 실패 (status=${HTTP_STATUS}). 서버 로그를 확인하세요."
+            # 서버 전송 실패는 워크플로우를 실패시키지 않음 (스캔 자체는 완료)
+            # exit 1
+          fi
+
+      # ── 9. 스캔 결과 아티팩트 업로드 (선택) ──────────────────
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snyk-scan-results
+          path: |
+            snyk-result.json
+            server-payload.json
+          retention-days: 7
+
+      # ── 10. 워크플로우 요약 ───────────────────────────────────
+      - name: Scan summary
+        if: always()
+        run: |
+          echo "## 🔒 Snyk 보안 스캔 결과" >> $GITHUB_STEP_SUMMARY
+          echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
+          echo "| 저장소 | ${{ github.repository }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 브랜치 | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 커밋 | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 작성자 | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 스캔 시각 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "결과는 Jira 티켓에 자동 업데이트됩니다." >> $GITHUB_STEP_SUMMARY

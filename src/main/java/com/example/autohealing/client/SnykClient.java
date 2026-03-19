@@ -2,6 +2,7 @@ package com.example.autohealing.client;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -13,13 +14,19 @@ import java.util.Map;
 import org.springframework.core.ParameterizedTypeReference;
 
 /**
- * Snyk 클라이언트 (REST v3 Org 전체 이슈 조회 전략).
+ * Snyk REST API 클라이언트 (legacy - 무료 플랜 환경에서는 비활성화됨).
  *
- * <p>무료 플랜에서 /projects 엔드포인트 403, scan_item.type=target 미지원 문제를 우회하기 위해
- * Org 전체 이슈를 조회합니다. 무료 플랜에서는 이슈 수가 제한적이므로 성능 문제 없습니다.
+ * <p>Snyk 무료 플랜에서는 REST API v3의 /projects, /issues 엔드포인트가 403을 반환합니다.
+ * 이 클라이언트는 {@code plugin.use-static-defaults=true}일 때만 활성화됩니다.
+ *
+ * <p><b>운영 환경 권장 방식:</b> GitHub Actions에서 Snyk CLI를 실행하고
+ * 결과를 {@code POST /api/webhook/snyk}으로 전송하는 방식을 사용하세요.
+ *
+ * @see com.example.autohealing.controller.SnykWebhookController
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "plugin.use-static-defaults", havingValue = "true", matchIfMissing = true)
 public class SnykClient implements SecurityScannerService {
 
   private final WebClient webClient;
