@@ -28,17 +28,17 @@ import java.util.List;
 @Service
 public class GithubService {
 
-  private final String repoName;
+  private final String defaultRepoName;
   private final String baseBranch; // 기본값 "develop" 또는 "feature/ai-remediation-engine"
   private final GithubConfig githubConfig;
   private GitHub github;
 
   public GithubService(
       @Value("${GITHUB_TOKEN:}") String githubToken,
-      @Value("${GITHUB_REPO:}") String repoName,
+      @Value("${GITHUB_REPO:}") String defaultRepoName,
       @Value("${GITHUB_BASE_BRANCH:develop}") String baseBranch,
       GithubConfig githubConfig) {
-    this.repoName = repoName;
+    this.defaultRepoName = defaultRepoName;
     this.baseBranch = baseBranch;
     this.githubConfig = githubConfig;
     try {
@@ -52,21 +52,23 @@ public class GithubService {
     }
   }
 
-  public String getRepoName() {
-    return this.repoName;
+  public String getDefaultRepoName() {
+    return this.defaultRepoName;
   }
 
   /**
    * AI 코드가 적용된 파일 내용을 바탕으로 새 브랜치에 커밋하고 Pull Request를 생성합니다.
    *
+   * @param targetRepo   풀 리퀘스트를 생성할 대상 저장소 (예: "sy7code/target-repo")
    * @param issue        취약점 이슈 정보
    * @param originalCode 원본 소스코드
    * @param fixedCode    수정된 소스코드
    * @param explanation  AI가 작성한 원인 및 수정 내역 (한국어 설명)
    * @return 생성된 PR 번호 (실패 시 null)
    */
-  public Integer createPullRequest(UnifiedIssue issue, String originalCode, String fixedCode, String explanation) {
-    if (github == null || repoName.isBlank()) {
+  public Integer createPullRequest(String targetRepo, UnifiedIssue issue, String originalCode, String fixedCode, String explanation) {
+    String repoToUse = targetRepo != null && !targetRepo.isBlank() ? targetRepo : defaultRepoName;
+    if (github == null || repoToUse == null || repoToUse.isBlank()) {
       log.warn("[GitHub] 인증 토큰 또는 저장소 정보가 설정되지 않아 PR 생성을 건너뜁니다.");
       return null;
     }
@@ -80,10 +82,10 @@ public class GithubService {
     String safeIssueId = issue.getId().replaceAll("[^a-zA-Z0-9-]", "-");
     String newBranchName = "fix/auto-fix-" + safeIssueId;
 
-    log.info("[GitHub] PR 생성 프로세스 시작 - branch={}, file={}", newBranchName, filePath);
+    log.info("[GitHub] PR 생성 프로세스 시작 - targetRepo={}, branch={}, file={}", repoToUse, newBranchName, filePath);
 
     try {
-      GHRepository repo = github.getRepository(repoName);
+      GHRepository repo = github.getRepository(repoToUse);
 
       // 1. Get base branch SHA
       GHBranch base = repo.getBranch(baseBranch);
@@ -150,16 +152,18 @@ public class GithubService {
   /**
    * PR 의 Check Runs(또는 Status)를 조회하여 빌드/테스트 성공 여부를 확인합니다.
    *
+   * @param targetRepo PR이 존재하는 대상 저장소
    * @param prNumber PR 번호
    * @return 모두 성공(success)이면 true, 아니면 false
    */
-  public boolean isPrTestsSuccessful(int prNumber) {
-    if (github == null || repoName.isBlank()) {
+  public boolean isPrTestsSuccessful(String targetRepo, int prNumber) {
+    String repoToUse = targetRepo != null && !targetRepo.isBlank() ? targetRepo : defaultRepoName;
+    if (github == null || repoToUse == null || repoToUse.isBlank()) {
       log.warn("[GitHub] 인증 토큰이나 저장소가 설정되지 않아 CI 검증을 무조건 통과처리 합니다.");
       return true;
     }
     try {
-      GHRepository repo = github.getRepository(repoName);
+      GHRepository repo = github.getRepository(repoToUse);
       GHPullRequest pr = repo.getPullRequest(prNumber);
       String headSha = pr.getHead().getSha();
 
@@ -201,17 +205,19 @@ public class GithubService {
   /**
    * PR 번호로 Pull Request를 머지하고 브랜치를 삭제합니다.
    *
+   * @param targetRepo PR이 존재하는 대상 저장소
    * @param prNumber PR 번호
    * @return 머지 성공 여부
    */
-  public boolean mergePullRequest(int prNumber) {
-    if (github == null || repoName.isBlank()) {
+  public boolean mergePullRequest(String targetRepo, int prNumber) {
+    String repoToUse = targetRepo != null && !targetRepo.isBlank() ? targetRepo : defaultRepoName;
+    if (github == null || repoToUse == null || repoToUse.isBlank()) {
       log.warn("[GitHub] 인증 토큰 또는 저장소 정보가 없어 머지를 건너뜁니다.");
       return false;
     }
 
     try {
-      GHRepository repo = github.getRepository(repoName);
+      GHRepository repo = github.getRepository(repoToUse);
       GHPullRequest pr = repo.getPullRequest(prNumber);
 
       pr.merge(githubConfig.getPr().getMergeMessage(), null, GHPullRequest.MergeMethod.SQUASH);
@@ -236,22 +242,24 @@ public class GithubService {
   /**
    * GitHub에서 특정 파일의 내용을 읽어와 문자열로 반환합니다.
    *
+   * @param targetRepo 내용을 읽어올 원본 저장소
    * @param filePath 파일 경로
    * @param branch   브랜치 이름 (null 이면 기본 브랜치 사용)
    * @return 파일 내용 문자열 (실패 시 null)
    */
-  public String getFileContentAsString(String filePath, String branch) {
-    if (github == null || repoName.isBlank())
+  public String getFileContentAsString(String targetRepo, String filePath, String branch) {
+    String repoToUse = targetRepo != null && !targetRepo.isBlank() ? targetRepo : defaultRepoName;
+    if (github == null || repoToUse == null || repoToUse.isBlank())
       return null;
     String targetBranch = (branch != null) ? branch : baseBranch;
     try {
-      GHRepository repo = github.getRepository(repoName);
+      GHRepository repo = github.getRepository(repoToUse);
       GHContent content = repo.getFileContent(filePath, targetBranch);
       try (java.io.InputStream is = content.read()) {
         return new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
       }
     } catch (Exception e) {
-      log.warn("[GitHub API] 파일 내용 읽기 실패: {} (branch: {})", filePath, targetBranch);
+      log.warn("[GitHub API] 파일 내용 읽기 실패: {}/{} (branch: {})", repoToUse, filePath, targetBranch);
       return null;
     }
   }

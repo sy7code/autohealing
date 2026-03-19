@@ -23,14 +23,19 @@
         </appender>
     </springProfile>
 
-    <root level="INFO">
-        <!-- 콘솔 출력 활성화 -->
-        <appender-ref ref="STDOUT" />
-        
-        <!-- 프로덕션 환경(Azure)에서는 파일 로그도 추가 활성화 -->
-        <springProfile name="prod">
-             <appender-ref ref="FILE" />
-        </springProfile>
-    </root>
+    <springProfile name="!prod">
+        <root level="INFO">
+            <!-- 콘솔 출력 활성화 -->
+            <appender-ref ref="STDOUT" />
+        </root>
+    </springProfile>
+
+    <springProfile name="prod">
+        <root level="INFO">
+            <!-- 콘솔 + 프로덕션 환경(Azure) 파일 로그 -->
+            <appender-ref ref="STDOUT" />
+            <appender-ref ref="FILE" />
+        </root>
+    </springProfile>
 
 </configuration>

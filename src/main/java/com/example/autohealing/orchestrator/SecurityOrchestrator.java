@@ -20,6 +20,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import com.example.autohealing.common.ScannerConstants;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -120,16 +121,30 @@ public class SecurityOrchestrator {
       // A. 다중 모듈 스캔 연동 (ScannerManager)
       log.info("[Orchestrator][Async] 스캐너 매니저를 통해 취약점 통합 수집 중...");
       List<Map<String, Object>> rawIssues = scannerManager.runAllActiveScanners(repoName);
-      // v18: SnykClient를 ScannerManager로 교체하면서 UnifiedIssue 변환을 여기서 수행하거나,
-      // GenericApiScanner가 이미 UnifiedIssue 형식을 Map에 매핑했다면 그대로 파싱합니다.
-      // SnykParserImpl을 활용해 UnifiedIssue로 변환합니다.
+      log.info("[Orchestrator][Async] rawIssues 수신: {}건", rawIssues.size());
 
-      List<UnifiedIssue> issues = rawIssues.stream()
-          .map(snykParser::toUnifiedIssue)
-          .toList();
-      log.info("[Orchestrator][Async] 통합 스캔 완료 - 취약점 {}건", issues.size());
+      // 디버그: rawIssues 내용 출력
+      for (int idx = 0; idx < rawIssues.size(); idx++) {
+        Map<String, Object> raw = rawIssues.get(idx);
+        log.info("[Orchestrator][Async] rawIssue[{}]: id={}, severity={}, title={}, scannerName={}",
+            idx, raw.get("id"), raw.get("severity"), raw.get("title"), raw.get("scannerName"));
+      }
 
-      if (issues == null || issues.isEmpty()) {
+      // UnifiedIssue 변환 (개별 예외 방어)
+      List<UnifiedIssue> issues = new ArrayList<>();
+      for (Map<String, Object> raw : rawIssues) {
+        try {
+          UnifiedIssue issue = snykParser.toUnifiedIssue(raw);
+          issues.add(issue);
+          log.info("[Orchestrator][Async] UnifiedIssue 변환 성공: id={}, severity={}, source={}, filePath={}",
+              issue.getId(), issue.getSeverity(), issue.getSource(), issue.getFilePath());
+        } catch (Exception e) {
+          log.error("[Orchestrator][Async] UnifiedIssue 변환 실패: raw={}", raw, e);
+        }
+      }
+      log.info("[Orchestrator][Async] 통합 스캔 완료 - 취약점 {}건 (rawIssues {}건 중)", issues.size(), rawIssues.size());
+
+      if (issues.isEmpty()) {
         updateWithNoIssues(issueKey, repoName);
         return;
       }
@@ -168,6 +183,11 @@ public class SecurityOrchestrator {
   private java.util.Set<String> applyAiRemediation(String issueKey, String repoName, List<UnifiedIssue> issues) {
     java.util.Set<String> fixedIds = new java.util.HashSet<>();
 
+    log.info("[Orchestrator][Diagnostic] 전체 이슈 목록 ({}건):", issues.size());
+    for (UnifiedIssue i : issues) {
+      log.info(" - ID: {}, Severity: {}, Source: {}, Title: {}", i.getId(), i.getSeverity(), i.getSource(), i.getTitle());
+    }
+
     List<UnifiedIssue> targets = issues.stream()
         .filter(i -> i.getSeverity() == UnifiedIssue.SeverityLevel.CRITICAL
             || i.getSeverity() == UnifiedIssue.SeverityLevel.HIGH)
@@ -175,7 +195,7 @@ public class SecurityOrchestrator {
 
     java.util.Set<String> processedIds = new java.util.HashSet<>();
 
-    log.info("[Orchestrator][AI] CRITICAL/HIGH {}건 AI 수정 시도 및 티켓 생성", targets.size());
+    log.info("[Orchestrator][AI] CRITICAL/HIGH 필터링 결과: {}건 AI 수정 도 및 티켓 생성 (원래 {}건)", targets.size(), issues.size());
 
     for (UnifiedIssue issue : targets) {
       if (!processedIds.add(issue.getId())) {
@@ -191,18 +211,19 @@ public class SecurityOrchestrator {
   }
 
   private boolean processSingleVulnerability(String parentIssueKey, String repoName, UnifiedIssue issue) {
+    log.info("[Orchestrator][Diagnostic] 개별 취약점 처리 시작 - ID: {}", issue.getId());
     if (deduplicationService.shouldSkip(issue)) {
-      log.info("[Orchestrator] 중복(Regression 방어 및 어뷰징 방지)으로 인해 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
+      log.warn("[Orchestrator][Diagnostic] 중복(Regression 방어 및 어뷰징 방지)으로 인 해당 취약점 처리를 스킵합니다. ID={}", issue.getId());
       return false;
     }
 
     // v10: 인프라 취약점은 AI 수정을 건너뛰고 수동 리뷰 상태로 바로 저장 (CSPM 분리)
     if (!ScannerConstants.SOURCE_SNYK.equals(issue.getSource())) {
-      log.info("[Orchestrator] 인프라 스캐너({})에서 발견된 이슈이므로 AI 자동 수정을 건너뛰고 수동 리뷰용 알림만 생성합니다. ID={}", issue.getSource(),
-          issue.getId());
+      log.warn("[Orchestrator][Diagnostic] 인프라 스캐너({})에서 발견된 이슈이므로 AI 자동 수정을 건너뛰고 수동 리뷰용 알림만 생성합니다. ID={}", issue.getSource(), issue.getId());
       createTicketsAndPrs(repoName, issue, null, null, "인프라(CSPM) 취약점이므로 수동 설정 변경(Manual Review)이 필요합니다.", false);
       return false;
     }
+
 
     boolean isAiFixed = false;
     String fixedCode = "";
@@ -365,12 +386,12 @@ public class SecurityOrchestrator {
         jiraService.transitionIssue(jiraKey, jiraConfig.getTransition().getInProgress());
         explanation += "\n\n**🔗 연동된 Jira 티켓:** " + jiraKey;
       }
-      Integer prNumber = githubService.createPullRequest(issue, originalCode, fixedCode, explanation);
+      Integer prNumber = githubService.createPullRequest(repoName, issue, originalCode, fixedCode, explanation);
       if (prNumber != null) {
         securityLog.setPrNumber(prNumber);
         securityLogRepository.save(securityLog);
 
-        String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+        String prUrl = "https://github.com/" + repoName + "/pull/" + prNumber;
         discordNotificationService.sendPrCreatedAlert(
             "fix/auto-fix-" + issue.getId().replaceAll("[^a-zA-Z0-9-]", "-"),
             prUrl,
@@ -383,13 +404,15 @@ public class SecurityOrchestrator {
    * 취약점 정보(description)에서 파일 경로를 추출해 서버(GitHub)에서 원본 소스코드를 가져옵니다.
    */
   private String readSourceFile(String repoName, UnifiedIssue issue) {
-    String filePath = extractFilePath(issue.getDescription());
-    if (filePath == null) {
-      return "// 파일 경로 정보 없음\n" + issue.getDescription();
+    String filePath = issue.getFilePath();
+    if (filePath == null || filePath.equals("build.gradle")) {
+       // filePath가 없거나 기본값일 경우, description에서 한 번 더 상세 추출 시도
+       String extracted = extractFilePath(issue.getDescription());
+       if (extracted != null) filePath = extracted;
     }
 
     // GitHub API를 통해 원격 코드를 가져옵니다
-    String remoteCode = githubService.getFileContentAsString(filePath, null);
+    String remoteCode = githubService.getFileContentAsString(repoName, filePath, null);
     if (remoteCode != null) {
       log.info("[Orchestrator][Remote] GitHub에서 파일 읽기 성공: {}", filePath);
       return remoteCode;
@@ -462,6 +485,116 @@ public class SecurityOrchestrator {
     }
 
     jiraService.updateIssue(issueKey, summary, sb.toString());
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Step 2 (variant): GitHub Actions Snyk CLI 결과 직접 처리
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * GitHub Actions에서 Snyk CLI 스캔 결과를 직접 수신하여 처리합니다.
+   *
+   * <p>Snyk 무료 플랜에서 REST API 403 제한을 우회하기 위해,
+   * GitHub Actions에서 {@code snyk test --json} 결과를 서버로 POST하는 방식을 사용합니다.
+   *
+   * <h3>페이로드 구조</h3>
+   * <pre>
+   * {
+   *   "repo": "org/repo",
+   *   "commit": "abc1234",
+   *   "committer": "username",
+   *   "vulnerabilities": [  ← snyk test --json 의 vulnerabilities 배열
+   *     { "id": "SNYK-JAVA-...", "title": "...", "severity": "high", ... }
+   *   ]
+   * }
+   * </pre>
+   *
+   * @param issueKey Jira 초기 티켓 Key (이미 생성된 상태)
+   * @param repoName 저장소 이름
+   * @param payload  Snyk 스캔 결과 페이로드
+   */
+  @Async("securityTaskExecutor")
+  public void processSnykPayload(String issueKey, String repoName, Map<String, Object> payload) {
+    log.info("[Orchestrator][SnykPayload] Step2 시작 - issueKey={}, repo={}", issueKey, repoName);
+
+    try {
+      // payload에서 vulnerabilities 추출 (snyk test --json 구조와 동일)
+      List<Map<String, Object>> rawIssues = extractVulnerabilities(payload);
+      log.info("[Orchestrator][SnykPayload] rawIssues 수신: {}건", rawIssues.size());
+
+      // 디버그: rawIssues 내용 출력
+      for (int idx = 0; idx < Math.min(rawIssues.size(), 10); idx++) {
+        Map<String, Object> raw = rawIssues.get(idx);
+        log.info("[Orchestrator][SnykPayload] rawIssue[{}]: id={}, severity={}, title={}",
+            idx, raw.get("id"), raw.get("severity"), raw.get("title"));
+      }
+
+      // UnifiedIssue 변환 (개별 예외 방어)
+      List<UnifiedIssue> issues = new ArrayList<>();
+      for (Map<String, Object> raw : rawIssues) {
+        try {
+          UnifiedIssue issue = snykParser.toUnifiedIssue(raw);
+          issues.add(issue);
+          log.info("[Orchestrator][SnykPayload] UnifiedIssue 변환 성공: id={}, severity={}, filePath={}",
+              issue.getId(), issue.getSeverity(), issue.getFilePath());
+        } catch (Exception e) {
+          log.error("[Orchestrator][SnykPayload] UnifiedIssue 변환 실패: raw={}", raw, e);
+        }
+      }
+      log.info("[Orchestrator][SnykPayload] 변환 완료 - {}건 (raw {}건 중)", issues.size(), rawIssues.size());
+
+      if (issues.isEmpty()) {
+        updateWithNoIssues(issueKey, repoName);
+        return;
+      }
+
+      // CRITICAL/HIGH → AI 자동 수정 + 컴파일 검증
+      java.util.Set<String> aiFixedIds = applyAiRemediation(issueKey, repoName, issues);
+
+      // Jira 최종 업데이트
+      updateWithVulnerabilities(issueKey, repoName, issues, aiFixedIds);
+
+    } catch (Exception e) {
+      log.error("[Orchestrator][SnykPayload] 오류 발생 - issueKey={}", issueKey, e);
+      jiraService.updateIssue(issueKey,
+          "[보안 분석 실패] " + repoName,
+          "Snyk 페이로드 처리 중 오류: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Snyk CLI 결과 JSON에서 취약점 목록을 추출합니다.
+   *
+   * <p>Snyk CLI --json-file-output 결과 형식:
+   * <ul>
+   *   <li>단일 프로젝트: { "vulnerabilities": [...], ... }
+   *   <li>--all-projects: [{ "vulnerabilities": [...] }, { "vulnerabilities": [...] }, ...]
+   * </ul>
+   * 두 경우 모두 처리하며, id 기준으로 중복을 제거합니다.
+   */
+  @SuppressWarnings("unchecked")
+  private List<Map<String, Object>> extractVulnerabilities(Map<String, Object> payload) {
+    List<Map<String, Object>> result = new ArrayList<>();
+    java.util.Set<String> seenIds = new java.util.HashSet<>();
+
+    // payload 자체가 단일 Snyk 결과 객체인 경우 (vulnerabilities 키 존재)
+    Object vulnsObj = payload.get("vulnerabilities");
+    if (vulnsObj instanceof List<?> list) {
+      for (Object item : list) {
+        if (item instanceof Map<?, ?> map) {
+          Map<String, Object> vuln = (Map<String, Object>) map;
+          String id = String.valueOf(vuln.getOrDefault("id", ""));
+          if (seenIds.add(id)) {
+            result.add(vuln);
+          }
+        }
+      }
+      log.info("[Orchestrator][SnykPayload] 단일 프로젝트 형식 - {}건 추출", result.size());
+      return result;
+    }
+
+    log.warn("[Orchestrator][SnykPayload] 'vulnerabilities' 키 없음. 페이로드 키: {}", payload.keySet());
+    return result;
   }
 
   /**

@@ -132,6 +132,19 @@ public class ConfigController {
 
       org.springframework.http.HttpEntity<Void> entity = new org.springframework.http.HttpEntity<>(headers);
       String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
+      
+      // Snyk REST API 특별 처리: 베이스 URL만 있는 경우 테스트용 엔드포인트 및 필수 헤더 보강
+      if (finalUrl != null && finalUrl.contains("api.snyk.io/rest")) {
+          if (finalUrl.endsWith("/rest") || finalUrl.endsWith("/rest/")) {
+              String baseUrl = finalUrl.endsWith("/") ? finalUrl.substring(0, finalUrl.length() - 1) : finalUrl;
+              finalUrl = baseUrl + "/orgs?version=2024-10-15";
+          }
+          // Snyk REST v3는 Accept 헤더가 필수이며, Bearer 대신 'token' 접두사를 사용합니다.
+          headers.set("Accept", "application/vnd.api+json");
+          if (apiKey != null && !apiKey.isBlank()) {
+              headers.set("Authorization", "token " + apiKey);
+          }
+      }
       ResponseEntity<String> response = restTemplate.exchange(finalUrl, method, entity, String.class);
 
       if (response.getStatusCode().is2xxSuccessful()) {
@@ -168,7 +181,12 @@ public class ConfigController {
       org.springframework.http.HttpEntity<java.util.Map<String, Object>> entity = new org.springframework.http.HttpEntity<>(
           requestBody, headers);
       String finalUrl = substitutePlaceholders(dto.getApiUrl(), dto.getCustomParams());
-      ResponseEntity<java.util.Map> response = restTemplate.postForEntity(finalUrl, entity, java.util.Map.class);
+      ResponseEntity<java.util.Map<String, Object>> response = restTemplate.exchange(
+          finalUrl,
+          org.springframework.http.HttpMethod.POST,
+          entity,
+          new org.springframework.core.ParameterizedTypeReference<java.util.Map<String, Object>>() {}
+      );
 
       if (response.getStatusCode().is2xxSuccessful()) {
         result.put("success", true);

@@ -200,24 +200,26 @@ public class DashboardController {
     // 1. GitHub PR 검증 및 머지
     if (logEntry.getPrNumber() != null && logEntry.getPrNumber() > 0) {
       int prNumber = logEntry.getPrNumber().intValue();
+      String targetRepo = logEntry.getRepoName(); // SecurityLog에 저장된 repoName 활용
 
-      log.info("[Approval] PR #{} 빌드/테스트 상태 확인을 시작합니다...", prNumber);
-      boolean ciSuccess = githubService.isPrTestsSuccessful(prNumber);
+      log.info("[Approval] PR #{} 빌드/테스트 상태 확인을 시작합니다... (repo: {})", prNumber, targetRepo);
+      boolean ciSuccess = githubService.isPrTestsSuccessful(targetRepo, prNumber);
       log.info("[Approval] PR #{} CI 자동 검증 결과 - passed={}", prNumber, ciSuccess);
 
       if (!ciSuccess) {
         return ResponseEntity.badRequest().body("CI 테스트가 아직 진행 중이거나 실패했습니다. 잠시 후 다시 시도해주세요.");
       }
 
-      prMerged = githubService.mergePullRequest(prNumber);
+      prMerged = githubService.mergePullRequest(targetRepo, prNumber);
       log.info("[Approval] PR 머지 결과 - prNumber={}, success={}", prNumber, prMerged);
 
       if (prMerged) {
-        String prUrl = "https://github.com/" + githubService.getRepoName() + "/pull/" + prNumber;
+        String repoToUse = targetRepo != null && !targetRepo.isBlank() ? targetRepo : githubService.getDefaultRepoName();
+        String prUrl = "https://github.com/" + repoToUse + "/pull/" + prNumber;
         discordNotificationService.sendMergeSuccessAlert(logEntry.getThreatType(), prUrl);
       }
     } else {
-      log.info("[Approval] PR 번호가 없어 머지를 건너뜁니다. id={}", id);
+      log.info("[Approval] PR 번호가 없어 머지를 건너뜠니다. id={}", id);
     }
 
     // 2. Jira 티켓 → Done
