@@ -69,76 +69,35 @@ jobs:
       - name: Authenticate with Snyk
         run: snyk auth ${{ secrets.SNYK_TOKEN }}
 
-      # ── 7. Snyk 스캔 실행 (JSON 결과를 파일로 저장) ───────────
+      # ── 7. Snyk 스캔 실행 ─────────────────────────────────────
       # --all-projects: 멀티 모듈 프로젝트 전체 스캔
+      # --json-file-output: stdout 대신 파일로 저장 (올바른 JSON 배열 형식 보장)
+      #   ※ stdout 리다이렉트(> 파일)는 NDJSON(줄 구분 JSON)으로 출력되어 파싱 실패
       # || true: 취약점 발견 시 exit code 1을 무시하고 계속 진행
       - name: Run Snyk scan
         run: |
-          snyk test --json --all-projects > snyk-result.json || true
+          snyk test --json-file-output=snyk-result.json --all-projects || true
           echo "스캔 완료. 결과 파일 크기: $(wc -c < snyk-result.json) bytes"
-          # 취약점 수 미리 확인 (로그용)
-          VULN_COUNT=$(cat snyk-result.json | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)
-          vulns = []
-          if isinstance(data, dict):
-              vulns = data.get('vulnerabilities', [])
-          elif isinstance(data, list):
-              for item in data:
-                  if isinstance(item, dict):
-                      vulns.extend(item.get('vulnerabilities', []))
-          print(len(vulns))
-          " 2>/dev/null || echo "0")
-          echo "발견된 취약점: ${VULN_COUNT}건"
+          # 결과 파일 첫 줄 확인 (배열인지 객체인지 디버그용)
+          head -c 200 snyk-result.json
 
       # ── 8. 스캔 결과를 서버로 POST ────────────────────────────
-      # --all-projects는 배열 형태로 리턴될 수 있으므로, 파이썬으로 정규화
+      # Snyk 결과 JSON을 그대로 전송. repo/commit/committer는 헤더로 전달.
+      # JSON 파싱은 서버(Java)에서 처리.
       - name: Send scan results to backend server
-        env:
-          BACKEND_URL: https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net
-          REPO_NAME: ${{ github.repository }}
-          COMMIT_ID: ${{ github.sha }}
-          COMMITTER: ${{ github.actor }}
         run: |
+          BACKEND_URL="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
           echo "서버로 결과 전송 중: ${BACKEND_URL}/api/webhook/snyk"
 
-          # Snyk JSON 결과를 서버 페이로드 형식으로 정규화
-          python3 << 'EOF'
-          import json, os, sys
-
-          with open('snyk-result.json', 'r') as f:
-              raw = json.load(f)
-
-          # --all-projects는 배열, 단일 프로젝트는 dict
-          vulns = []
-          if isinstance(raw, dict):
-              vulns = raw.get('vulnerabilities', [])
-          elif isinstance(raw, list):
-              for item in raw:
-                  if isinstance(item, dict):
-                      vulns.extend(item.get('vulnerabilities', []))
-
-          # 서버 페이로드 구성
-          payload = {
-              'repo': os.environ.get('REPO_NAME', 'unknown'),
-              'commit': os.environ.get('COMMIT_ID', 'unknown')[:8],
-              'committer': os.environ.get('COMMITTER', 'unknown'),
-              'vulnerabilities': vulns
-          }
-
-          with open('server-payload.json', 'w') as f:
-              json.dump(payload, f)
-
-          print(f"페이로드 준비 완료: {len(vulns)}건의 취약점")
-          EOF
-
-          # 서버로 POST 요청
           HTTP_STATUS=$(curl -s -o curl-response.txt -w "%{http_code}" \
             -X POST \
             -H "Content-Type: application/json" \
             -H "X-Source: github-actions" \
+            -H "X-Repo: ${{ github.repository }}" \
+            -H "X-Commit: ${{ github.sha }}" \
+            -H "X-Committer: ${{ github.actor }}" \
             --max-time 30 \
-            --data @server-payload.json \
+            --data @snyk-result.json \
             "${BACKEND_URL}/api/webhook/snyk")
 
           echo "서버 응답 코드: ${HTTP_STATUS}"
@@ -148,8 +107,6 @@ jobs:
             echo "✅ 서버 전송 성공 (status=${HTTP_STATUS})"
           else
             echo "⚠️ 서버 전송 실패 (status=${HTTP_STATUS}). 서버 로그를 확인하세요."
-            # 서버 전송 실패는 워크플로우를 실패시키지 않음 (스캔 자체는 완료)
-            # exit 1
           fi
 
       # ── 9. 스캔 결과 아티팩트 업로드 (선택) ──────────────────

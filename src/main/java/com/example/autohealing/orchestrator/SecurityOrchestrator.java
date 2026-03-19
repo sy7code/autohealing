@@ -563,23 +563,38 @@ public class SecurityOrchestrator {
   }
 
   /**
-   * 페이로드에서 취약점 목록을 추출합니다.
-   * snyk test --json 형식의 최상위 "vulnerabilities" 배열을 추출합니다.
+   * Snyk CLI 결과 JSON에서 취약점 목록을 추출합니다.
+   *
+   * <p>Snyk CLI --json-file-output 결과 형식:
+   * <ul>
+   *   <li>단일 프로젝트: { "vulnerabilities": [...], ... }
+   *   <li>--all-projects: [{ "vulnerabilities": [...] }, { "vulnerabilities": [...] }, ...]
+   * </ul>
+   * 두 경우 모두 처리하며, id 기준으로 중복을 제거합니다.
    */
   @SuppressWarnings("unchecked")
   private List<Map<String, Object>> extractVulnerabilities(Map<String, Object> payload) {
+    List<Map<String, Object>> result = new ArrayList<>();
+    java.util.Set<String> seenIds = new java.util.HashSet<>();
+
+    // payload 자체가 단일 Snyk 결과 객체인 경우 (vulnerabilities 키 존재)
     Object vulnsObj = payload.get("vulnerabilities");
     if (vulnsObj instanceof List<?> list) {
-      List<Map<String, Object>> result = new ArrayList<>();
       for (Object item : list) {
         if (item instanceof Map<?, ?> map) {
-          result.add((Map<String, Object>) map);
+          Map<String, Object> vuln = (Map<String, Object>) map;
+          String id = String.valueOf(vuln.getOrDefault("id", ""));
+          if (seenIds.add(id)) {
+            result.add(vuln);
+          }
         }
       }
+      log.info("[Orchestrator][SnykPayload] 단일 프로젝트 형식 - {}건 추출", result.size());
       return result;
     }
-    log.warn("[Orchestrator][SnykPayload] 'vulnerabilities' 키 없음 또는 형식 오류. 페이로드 키: {}", payload.keySet());
-    return new ArrayList<>();
+
+    log.warn("[Orchestrator][SnykPayload] 'vulnerabilities' 키 없음. 페이로드 키: {}", payload.keySet());
+    return result;
   }
 
   /**
