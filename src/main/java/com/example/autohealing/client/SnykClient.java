@@ -158,9 +158,15 @@ public class SnykClient implements SecurityScannerService {
   @SuppressWarnings("unchecked")
   private void collectProjectsByTarget(String targetId, List<String> allProjectIds) {
       try {
+          // URI 템플릿 대신 직접 문자열 조합 (쿼리 파라미터 인코딩 문제 방지)
+          String projectsUrl = restBaseUrl + "/orgs/" + snykOrgId
+              + "/projects?version=" + apiVersion
+              + "&target_id=" + targetId
+              + "&limit=100";
+          log.debug("[SnykClient] 프로젝트 조회 URL: {}", projectsUrl);
+
           Map<String, Object> projResp = webClient.get()
-              .uri(restBaseUrl + "/orgs/{orgId}/projects?version={ver}&target_id={targetId}&limit=100",
-                  snykOrgId, apiVersion, targetId)
+              .uri(projectsUrl)
               .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
               .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
               .retrieve()
@@ -184,30 +190,38 @@ public class SnykClient implements SecurityScannerService {
 
   @SuppressWarnings("unchecked")
   private void collectProjectsByV1Name(String repositoryName, List<String> allProjectIds) {
+      // v1 API는 410 Gone (deprecated) → REST v3 이름 기반 검색으로 대체
       try {
-          final String keyword = repositoryName.contains("/") ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1) : repositoryName;
-          Map<String, Object> v1Resp = webClient.get()
-              .uri(v1BaseUrl + "/org/{orgId}/projects", snykOrgId)
+          final String keyword = repositoryName.contains("/")
+              ? repositoryName.substring(repositoryName.lastIndexOf('/') + 1)
+              : repositoryName;
+
+          String searchUrl = restBaseUrl + "/orgs/" + snykOrgId
+              + "/projects?version=" + apiVersion
+              + "&names=" + keyword
+              + "&limit=100";
+          log.info("[SnykClient] REST v3 이름 기반 프로젝트 검색: {}", keyword);
+
+          Map<String, Object> resp = webClient.get()
+              .uri(searchUrl)
               .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
-              .header(HttpHeaders.ACCEPT, "application/json")
+              .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
               .retrieve()
               .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
               .block();
 
-          if (v1Resp != null) {
-              List<Map<String, Object>> v1Projects = (List<Map<String, Object>>) v1Resp.get("projects");
-              if (v1Projects != null) {
-                  for (Map<String, Object> p : v1Projects) {
-                      String pname = (String) p.get("name");
-                      if (pname != null && pname.toLowerCase().contains(keyword.toLowerCase())) {
-                          allProjectIds.add((String) p.get("id"));
-                          log.info("[SnykClient] ✅ v1 매칭 성공: {}", pname);
-                      }
+          if (resp != null) {
+              List<Map<String, Object>> projects = (List<Map<String, Object>>) resp.get("data");
+              if (projects != null) {
+                  for (Map<String, Object> p : projects) {
+                      allProjectIds.add((String) p.get("id"));
+                      Map<String, Object> attrs = (Map<String, Object>) p.get("attributes");
+                      log.info("[SnykClient] ✅ v3 이름 매칭 성공: {}", (attrs != null) ? attrs.get("name") : p.get("id"));
                   }
               }
           }
       } catch (Exception e) {
-          log.error("[SnykClient] v1 검색 오류", e);
+          log.error("[SnykClient] v3 이름 기반 검색 오류", e);
       }
   }
 
@@ -215,9 +229,15 @@ public class SnykClient implements SecurityScannerService {
   private List<Map<String, Object>> fetchIssuesV3(String projectId) {
     try {
       log.info("[SnykClient] 이슈 조회 (v3): {}", projectId);
+      // URI 템플릿 대신 직접 문자열 조합 (쿼리 파라미터 인코딩 문제 방지)
+      String issuesUrl = restBaseUrl + "/orgs/" + snykOrgId
+          + "/issues?version=" + apiVersion
+          + "&scan_item.id=" + projectId
+          + "&scan_item.type=project";
+      log.debug("[SnykClient] 이슈 조회 URL: {}", issuesUrl);
+
       Map<String, Object> response = webClient.get()
-          .uri(restBaseUrl + "/orgs/{orgId}/issues?version={ver}&scan_item.id={projectId}&scan_item.type=project",
-              snykOrgId, apiVersion, projectId)
+          .uri(issuesUrl)
           .header(HttpHeaders.AUTHORIZATION, "token " + snykApiToken)
           .header(HttpHeaders.ACCEPT, "application/vnd.api+json")
           .retrieve()
