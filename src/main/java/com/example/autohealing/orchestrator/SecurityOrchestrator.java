@@ -487,6 +487,116 @@ public class SecurityOrchestrator {
     jiraService.updateIssue(issueKey, summary, sb.toString());
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Step 2 (variant): GitHub Actions Snyk CLI 결과 직접 처리
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * GitHub Actions에서 Snyk CLI 스캔 결과를 직접 수신하여 처리합니다.
+   *
+   * <p>Snyk 무료 플랜에서 REST API 403 제한을 우회하기 위해,
+   * GitHub Actions에서 {@code snyk test --json} 결과를 서버로 POST하는 방식을 사용합니다.
+   *
+   * <h3>페이로드 구조</h3>
+   * <pre>
+   * {
+   *   "repo": "org/repo",
+   *   "commit": "abc1234",
+   *   "committer": "username",
+   *   "vulnerabilities": [  ← snyk test --json 의 vulnerabilities 배열
+   *     { "id": "SNYK-JAVA-...", "title": "...", "severity": "high", ... }
+   *   ]
+   * }
+   * </pre>
+   *
+   * @param issueKey Jira 초기 티켓 Key (이미 생성된 상태)
+   * @param repoName 저장소 이름
+   * @param payload  Snyk 스캔 결과 페이로드
+   */
+  @Async("securityTaskExecutor")
+  public void processSnykPayload(String issueKey, String repoName, Map<String, Object> payload) {
+    log.info("[Orchestrator][SnykPayload] Step2 시작 - issueKey={}, repo={}", issueKey, repoName);
+
+    try {
+      // payload에서 vulnerabilities 추출 (snyk test --json 구조와 동일)
+      List<Map<String, Object>> rawIssues = extractVulnerabilities(payload);
+      log.info("[Orchestrator][SnykPayload] rawIssues 수신: {}건", rawIssues.size());
+
+      // 디버그: rawIssues 내용 출력
+      for (int idx = 0; idx < Math.min(rawIssues.size(), 10); idx++) {
+        Map<String, Object> raw = rawIssues.get(idx);
+        log.info("[Orchestrator][SnykPayload] rawIssue[{}]: id={}, severity={}, title={}",
+            idx, raw.get("id"), raw.get("severity"), raw.get("title"));
+      }
+
+      // UnifiedIssue 변환 (개별 예외 방어)
+      List<UnifiedIssue> issues = new ArrayList<>();
+      for (Map<String, Object> raw : rawIssues) {
+        try {
+          UnifiedIssue issue = snykParser.toUnifiedIssue(raw);
+          issues.add(issue);
+          log.info("[Orchestrator][SnykPayload] UnifiedIssue 변환 성공: id={}, severity={}, filePath={}",
+              issue.getId(), issue.getSeverity(), issue.getFilePath());
+        } catch (Exception e) {
+          log.error("[Orchestrator][SnykPayload] UnifiedIssue 변환 실패: raw={}", raw, e);
+        }
+      }
+      log.info("[Orchestrator][SnykPayload] 변환 완료 - {}건 (raw {}건 중)", issues.size(), rawIssues.size());
+
+      if (issues.isEmpty()) {
+        updateWithNoIssues(issueKey, repoName);
+        return;
+      }
+
+      // CRITICAL/HIGH → AI 자동 수정 + 컴파일 검증
+      java.util.Set<String> aiFixedIds = applyAiRemediation(issueKey, repoName, issues);
+
+      // Jira 최종 업데이트
+      updateWithVulnerabilities(issueKey, repoName, issues, aiFixedIds);
+
+    } catch (Exception e) {
+      log.error("[Orchestrator][SnykPayload] 오류 발생 - issueKey={}", issueKey, e);
+      jiraService.updateIssue(issueKey,
+          "[보안 분석 실패] " + repoName,
+          "Snyk 페이로드 처리 중 오류: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Snyk CLI 결과 JSON에서 취약점 목록을 추출합니다.
+   *
+   * <p>Snyk CLI --json-file-output 결과 형식:
+   * <ul>
+   *   <li>단일 프로젝트: { "vulnerabilities": [...], ... }
+   *   <li>--all-projects: [{ "vulnerabilities": [...] }, { "vulnerabilities": [...] }, ...]
+   * </ul>
+   * 두 경우 모두 처리하며, id 기준으로 중복을 제거합니다.
+   */
+  @SuppressWarnings("unchecked")
+  private List<Map<String, Object>> extractVulnerabilities(Map<String, Object> payload) {
+    List<Map<String, Object>> result = new ArrayList<>();
+    java.util.Set<String> seenIds = new java.util.HashSet<>();
+
+    // payload 자체가 단일 Snyk 결과 객체인 경우 (vulnerabilities 키 존재)
+    Object vulnsObj = payload.get("vulnerabilities");
+    if (vulnsObj instanceof List<?> list) {
+      for (Object item : list) {
+        if (item instanceof Map<?, ?> map) {
+          Map<String, Object> vuln = (Map<String, Object>) map;
+          String id = String.valueOf(vuln.getOrDefault("id", ""));
+          if (seenIds.add(id)) {
+            result.add(vuln);
+          }
+        }
+      }
+      log.info("[Orchestrator][SnykPayload] 단일 프로젝트 형식 - {}건 추출", result.size());
+      return result;
+    }
+
+    log.warn("[Orchestrator][SnykPayload] 'vulnerabilities' 키 없음. 페이로드 키: {}", payload.keySet());
+    return result;
+  }
+
   /**
    * PR Merge 이벤트 수신 시 티켓 상태를 Done으로 전환합니다.
    */
