@@ -46,6 +46,13 @@ out/
 logs/
 run.log
 compile.log
+azure_logs
+azure_logs/
+
+### Snyk ###
+snyk-result.json
+server-payload.json
+curl-response.txt
 
 ### Temporary Files ###
 *.tmp
